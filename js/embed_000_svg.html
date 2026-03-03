@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SVG JS Embed Demo</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+        background: #f5f7fa;
+      }
+
+      .card {
+        max-width: 900px;
+        margin: 0 auto;
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 16px;
+      }
+
+      .title {
+        margin: 0 0 12px;
+        font-size: 18px;
+      }
+
+      #svg-root {
+        border: 1px dashed #cbd5e1;
+        background: #fff;
+        min-height: 460px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: auto;
+      }
+
+      .tip {
+        margin-top: 10px;
+        color: #475569;
+        font-size: 13px;
+      }
+
+      .panel {
+        margin-top: 14px;
+        padding: 12px;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background: #f8fafc;
+      }
+
+      .row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 8px;
+      }
+
+      .input {
+        width: 100%;
+        min-height: 88px;
+        box-sizing: border-box;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .btn {
+        border: 0;
+        border-radius: 6px;
+        background: #0f766e;
+        color: #fff;
+        padding: 8px 12px;
+        font-size: 14px;
+        cursor: pointer;
+      }
+
+      .btn.secondary {
+        background: #334155;
+      }
+
+      .output {
+        width: 100%;
+        min-height: 180px;
+        box-sizing: border-box;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 12px;
+        line-height: 1.5;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          "Courier New", monospace;
+        white-space: pre;
+        overflow: auto;
+        background: #ffffff;
+      }
+
+      .output.small {
+        min-height: 140px;
+      }
+
+      .status {
+        margin-top: 8px;
+        font-size: 13px;
+        color: #334155;
+      }
+
+      .muted {
+        color: #64748b;
+        font-size: 12px;
+        margin-top: 6px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      .field {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+
+      @media (max-width: 900px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1 class="title">000.svg JS 动态嵌入示例</h1>
+      <div id="svg-root"></div>
+      <p class="tip">
+        来源：<code>js/000_svg.js</code>。当前页面支持 scatter / line / area / bar 的文字驱动更新，并可导出修改后的 JS。
+      </p>
+
+      <section class="panel" aria-label="对话框">
+        <label for="svg-file">可选：加载其他 SVG 文件</label>
+        <div class="row">
+          <input id="svg-file" type="file" accept=".svg,image/svg+xml" />
+        </div>
+        <div id="chart-type" class="muted"></div>
+
+        <label for="qa-input">输入 QA（读取“修改”和“问题”）</label>
+        <textarea
+          id="qa-input"
+          class="input"
+          placeholder="修改: 新增点（12，30），（40，55）
+问题: 现在图表类型是什么？"
+        ></textarea>
+        <div class="row">
+          <button id="apply-btn" class="btn" type="button">执行 QA</button>
+          <button id="reset-btn" class="btn secondary" type="button">重置图表</button>
+        </div>
+        <div id="status" class="status"></div>
+      </section>
+
+      <section class="panel">
+        <label>真实模型配置（OpenAI 兼容接口）</label>
+        <div class="grid">
+          <input id="model-base-url" class="field" placeholder="Base URL，例如 https://api.openai.com/v1" />
+          <input id="model-name" class="field" placeholder="Model，例如 gpt-4.1-mini" />
+          <input id="model-api-key" class="field" type="password" placeholder="API Key" />
+        </div>
+        <div class="muted">配置后会优先调用真实模型；未配置时回退本地规则回答。</div>
+      </section>
+
+      <section class="panel">
+        <label for="model-output">模型输出</label>
+        <textarea id="model-output" class="output small" spellcheck="false"></textarea>
+      </section>
+
+      <section class="panel">
+        <label for="code-output">修改后的 JS 代码（可直接保存为模块）</label>
+        <textarea id="code-output" class="output" spellcheck="false"></textarea>
+      </section>
+    </main>
+
+    <script type="module">
+      import { mountSvg } from "./000_svg.js";
+      import {
+        applyQuestionToSvg,
+        buildJsModuleFromSvg,
+        createSvgElementFromString,
+        detectChartType,
+        runLocalModel,
+        runRemoteModel,
+        summarizeSvg,
+      } from "./chart_ops.mjs";
+
+      const root = document.getElementById("svg-root");
+      const qaInput = document.getElementById("qa-input");
+      const applyBtn = document.getElementById("apply-btn");
+      const resetBtn = document.getElementById("reset-btn");
+      const status = document.getElementById("status");
+      const codeOutput = document.getElementById("code-output");
+      const modelOutput = document.getElementById("model-output");
+      const chartType = document.getElementById("chart-type");
+      const svgFile = document.getElementById("svg-file");
+      const modelBaseUrl = document.getElementById("model-base-url");
+      const modelName = document.getElementById("model-name");
+      const modelApiKey = document.getElementById("model-api-key");
+
+      let currentSvg = mountSvg(root);
+      let initialSvgMarkup = new XMLSerializer().serializeToString(currentSvg);
+
+      function refreshChartType() {
+        const type = detectChartType(currentSvg);
+        chartType.textContent = `当前图表类型：${type}`;
+      }
+
+      function refreshCode() {
+        codeOutput.value = buildJsModuleFromSvg(currentSvg);
+      }
+
+      function parseQaBlock(input) {
+        const lines = String(input || "").split(/\r?\n/);
+        let modification = "";
+        let question = "";
+
+        for (const raw of lines) {
+          const line = raw.trim();
+          if (!line) {
+            continue;
+          }
+          const m = line.match(/^(修改|modify|update)\s*[:：]\s*(.+)$/i);
+          if (m) {
+            modification = m[2].trim();
+            continue;
+          }
+          const q = line.match(/^(问题|question|q)\s*[:：]\s*(.+)$/i);
+          if (q) {
+            question = q[2].trim();
+          }
+        }
+
+        return { modification, question };
+      }
+
+      refreshChartType();
+      refreshCode();
+      modelOutput.value = JSON.stringify(runLocalModel("", summarizeSvg(currentSvg), null), null, 2);
+
+      modelBaseUrl.value = localStorage.getItem("qa_model_base_url") || "";
+      modelName.value = localStorage.getItem("qa_model_name") || "";
+      modelApiKey.value = localStorage.getItem("qa_model_api_key") || "";
+
+      function readModelConfig() {
+        const config = {
+          baseUrl: modelBaseUrl.value.trim(),
+          model: modelName.value.trim(),
+          apiKey: modelApiKey.value.trim(),
+        };
+        localStorage.setItem("qa_model_base_url", config.baseUrl);
+        localStorage.setItem("qa_model_name", config.model);
+        localStorage.setItem("qa_model_api_key", config.apiKey);
+        return config;
+      }
+
+      svgFile.addEventListener("change", async (event) => {
+        const file = event.target.files?.[0];
+        if (!file) {
+          return;
+        }
+        try {
+          const text = await file.text();
+          currentSvg = createSvgElementFromString(text);
+          initialSvgMarkup = text;
+          root.replaceChildren(currentSvg);
+          refreshChartType();
+          refreshCode();
+          modelOutput.value = JSON.stringify(runLocalModel("图表类型是什么", summarizeSvg(currentSvg), null), null, 2);
+          status.textContent = `已加载 ${file.name}`;
+        } catch (error) {
+          status.textContent = `加载 SVG 失败：${error instanceof Error ? error.message : String(error)}`;
+        }
+      });
+
+      applyBtn.addEventListener("click", async () => {
+        const { modification, question } = parseQaBlock(qaInput.value);
+        if (!modification && !question) {
+          status.textContent = "请输入 QA，至少包含“修改:”或“问题:”。";
+          return;
+        }
+
+        let operationResult = null;
+        try {
+          if (modification) {
+            operationResult = applyQuestionToSvg(currentSvg, modification);
+            refreshChartType();
+            refreshCode();
+          }
+          const summary = summarizeSvg(currentSvg);
+          const cfg = readModelConfig();
+          let response;
+          if (cfg.baseUrl && cfg.model && cfg.apiKey) {
+            response = await runRemoteModel(question, summary, operationResult, cfg);
+          } else {
+            response = runLocalModel(question, summary, operationResult);
+          }
+          modelOutput.value = JSON.stringify(response, null, 2);
+          status.textContent = modification ? "修改已执行，并返回模型输出。" : "已返回模型输出。";
+        } catch (error) {
+          status.textContent = `执行失败：${error instanceof Error ? error.message : String(error)}`;
+        }
+      });
+
+      resetBtn.addEventListener("click", () => {
+        currentSvg = createSvgElementFromString(initialSvgMarkup);
+        root.replaceChildren(currentSvg);
+        refreshChartType();
+        refreshCode();
+        modelOutput.value = JSON.stringify(runLocalModel("", summarizeSvg(currentSvg), null), null, 2);
+        status.textContent = "图表已重置到初始状态。";
+      });
+    </script>
+  </body>
+</html>

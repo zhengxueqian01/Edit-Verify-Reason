@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ChartAgent Web Runner</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --text: #1f2a37;
+      --muted: #6b7280;
+      --primary: #0f766e;
+      --primary-2: #115e59;
+      --border: #dbe3ef;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: var(--text);
+      background: radial-gradient(circle at 20% -10%, #e6fffb 0%, var(--bg) 42%);
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 960px;
+      margin: 32px auto;
+      padding: 0 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 8px 28px rgba(15, 23, 42, 0.06);
+      margin-bottom: 16px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      letter-spacing: .2px;
+    }
+    p.desc {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    label {
+      display: block;
+      margin: 12px 0 6px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    input[type="file"], textarea, input[type="number"] {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 14px;
+      background: #fff;
+    }
+    textarea { min-height: 90px; resize: vertical; }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 220px;
+      gap: 12px;
+    }
+    button {
+      margin-top: 14px;
+      border: 0;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--primary), #0d9488);
+      color: #fff;
+      padding: 10px 14px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0b1020;
+      color: #c8d2ff;
+      padding: 12px;
+      border-radius: 10px;
+      font-size: 12px;
+      max-height: 360px;
+      overflow: auto;
+    }
+    .result-img {
+      max-width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fff;
+    }
+    .muted { color: var(--muted); font-size: 13px; }
+    @media (max-width: 760px) { .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>ChartAgent 操作面板</h1>
+      <p class="desc">上传 SVG，输入一段“操作 + 问题”的文本，后端会调用 <code>run_main()</code> 执行并返回结果。</p>
+    </div>
+
+    <div class="card">
+      <form id="runForm">
+        <label>上传 SVG 文件</label>
+        <input id="svgFile" name="svg_file" type="file" accept=".svg" required />
+
+        <label>操作与问题（question）</label>
+        <textarea id="question" name="question" placeholder="例如：删除类别 \"Aegis Corp\"，新增系列 \"Vanguard Dynamics\" : [1,2,3,...]。修改后整体最大值在哪一年？" required></textarea>
+
+        <div class="row">
+          <div>
+            <label>max_render_retries</label>
+            <input id="maxRetries" name="max_render_retries" type="number" min="0" value="2" />
+          </div>
+        </div>
+
+        <button id="submitBtn" type="submit">提交并执行</button>
+      </form>
+      <p class="muted" id="status"></p>
+    </div>
+
+    <div class="card">
+      <h3>修改后图片</h3>
+      <img id="resultImage" class="result-img" alt="结果图" />
+      <p class="muted" id="imagePath"></p>
+    </div>
+
+    <div class="card">
+      <h3>QA 答案</h3>
+      <pre id="qaAnswer">尚未执行</pre>
+    </div>
+
+  </div>
+
+  <script>
+    const form = document.getElementById('runForm');
+    const btn = document.getElementById('submitBtn');
+    const statusEl = document.getElementById('status');
+    const qaAnswer = document.getElementById('qaAnswer');
+    const resultImage = document.getElementById('resultImage');
+    const imagePath = document.getElementById('imagePath');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      btn.disabled = true;
+      statusEl.textContent = '执行中...';
+      qaAnswer.textContent = '执行中...';
+      resultImage.removeAttribute('src');
+      imagePath.textContent = '';
+
+      try {
+        const fd = new FormData(form);
+        const resp = await fetch('/api/run', { method: 'POST', body: fd });
+        const data = await resp.json();
+        qaAnswer.textContent = data.qa_answer || '未返回答案';
+
+        if (data.output_image_url) {
+          resultImage.src = data.output_image_url + '?t=' + Date.now();
+          imagePath.textContent = data.output_image_path || '';
+        }
+        if (!resp.ok) {
+          statusEl.textContent = '执行失败';
+          if (data.error) {
+            qaAnswer.textContent = `失败：${data.error}`;
+          }
+        } else {
+          statusEl.textContent = '执行完成';
+        }
+      } catch (err) {
+        qaAnswer.textContent = `请求失败：${String(err)}`;
+        statusEl.textContent = '请求失败';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,739 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import xml.etree.ElementTree as ET
+from typing import Any
+
+PROJECT_SRC = os.path.abspath(os.path.dirname(__file__))
+if PROJECT_SRC not in sys.path:
+    sys.path.insert(0, PROJECT_SRC)
+
+from chart_agent.config import get_model_config, get_task_model_config
+from chart_agent.core.perception_graph import run_perception
+from chart_agent.core.trace import append_trace
+from chart_agent.core.answerer import answer_question
+from chart_agent.core.clusterer import run_dbscan, svg_points_to_data
+from chart_agent.llm_factory import make_llm
+from chart_agent.perception.scatter_svg_updater import update_scatter_svg
+from chart_agent.perception.area_svg_updater import update_area_svg
+from chart_agent.perception.line_svg_updater import update_line_svg
+from chart_agent.perception.render_validator import validate_render
+from chart_agent.perception.svg_renderer import default_output_paths
+from chart_agent.perception.svg_perceiver import perceive_svg
+from chart_agent.perception import area_svg_updater as area_ops
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Chart agent perception CLI")
+    parser.add_argument("--question", required=True, help="User question")
+    parser.add_argument("--text_spec", default="", help="Text specification")
+    parser.add_argument("--image", dest="image_path", default="", help="Path to image")
+    parser.add_argument("--svg", dest="svg_path", default="", help="Path to SVG")
+    return parser.parse_args()
+
+
+SUPPORTED_SVG_CHART_TYPES = {"scatter", "line", "area"}
+
+
+def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
+    # Disable LangSmith tracing in this project runtime unless the user re-enables it explicitly.
+    os.environ["LANGSMITH_TRACING"] = "false"
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+    planner_llm = make_llm(get_model_config("gpt"))
+    llm = make_llm(get_task_model_config("router"))
+    update_question, qa_question, split_info = _resolve_questions(inputs, planner_llm)
+    if not inputs.get("svg_path"):
+        raise ValueError("This entry only supports SVG-based updates for line/area/scatter.")
+
+    max_render_retries = int(inputs.get("max_render_retries", 2))
+    retries = max(0, max_render_retries)
+    attempt_logs: list[dict[str, Any]] = []
+    last_state = None
+    last_output_image = None
+    last_operation_plan: dict[str, Any] | None = None
+    last_render_check: dict[str, Any] = {"ok": False, "issues": ["not_run"], "confidence": 0.0}
+    retry_hint = ""
+    planned_question = update_question
+    used_scatter_points: list[dict[str, float]] = []
+    last_perception_steps: list[dict[str, Any]] = []
+
+    for attempt in range(1, retries + 2):
+        perception_inputs = dict(inputs)
+        perception_inputs["question"] = planned_question
+        if inputs.get("chart_type_hint"):
+            perception_inputs["chart_type_hint"] = inputs.get("chart_type_hint")
+        state = run_perception(perception_inputs)
+        last_state = state
+        chart_type = _resolve_supported_chart_type(state.perception)
+        state.perception["chart_type"] = chart_type
+        mapping_info = state.perception.get("mapping_info", {})
+        if chart_type not in SUPPORTED_SVG_CHART_TYPES:
+            raise ValueError(
+                f"Unsupported chart_type '{chart_type}'. Only {sorted(SUPPORTED_SVG_CHART_TYPES)} are supported."
+            )
+
+        operation_plan = _llm_plan_update(planned_question, str(chart_type), planner_llm, retry_hint=retry_hint)
+        last_operation_plan = operation_plan
+        normalized_question = str(operation_plan.get("normalized_question") or planned_question)
+        planned_question = _choose_planned_question(planned_question, normalized_question)
+        if not operation_plan.get("llm_success"):
+            render_check = {
+                "ok": False,
+                "confidence": 0.0,
+                "issues": ["llm_plan_failed"],
+            }
+            attempt_logs.append(
+                {
+                    "attempt": attempt,
+                    "chart_type": chart_type,
+                    "operation_plan": operation_plan,
+                    "planned_question": planned_question,
+                    "output_image_path": None,
+                    "render_check": render_check,
+                }
+            )
+            last_output_image = None
+            last_render_check = render_check
+            retry_hint = "llm planning failed"
+            continue
+
+        output_image = None
+        step_logs: list[dict[str, Any]] = []
+        perception_steps: list[dict[str, Any]] = []
+        try:
+            output_image, step_logs, perception_steps, last_state, used_scatter_points = _execute_planned_steps(
+                inputs=inputs,
+                planned_question=planned_question,
+                operation_plan=operation_plan,
+                chart_type=chart_type,
+                llm=llm,
+                used_scatter_points=used_scatter_points,
+            )
+        except Exception as exc:
+            render_check = {
+                "ok": False,
+                "confidence": 0.0,
+                "issues": [f"operation_step_failed: {exc}"],
+            }
+            attempt_logs.append(
+                {
+                    "attempt": attempt,
+                    "chart_type": chart_type,
+                    "operation_plan": operation_plan,
+                    "planned_question": planned_question,
+                    "output_image_path": None,
+                    "step_logs": step_logs,
+                    "render_check": render_check,
+                }
+            )
+            last_output_image = None
+            last_render_check = render_check
+            retry_hint = str(exc)
+            continue
+
+        render_check = _validate_render_with_programmatic(
+            output_image=output_image,
+            chart_type=chart_type,
+            update_spec=(last_state.perception if last_state else state.perception).get("update_spec", {}),
+            step_logs=step_logs,
+            llm=llm,
+        )
+        append_trace(
+            state.trace,
+            node="render_check",
+            action="RENDER_VALIDATE",
+            rationale="Validate rendered image output.",
+            inputs_summary={"output_image_path": output_image, "attempt": attempt},
+            outputs_summary={"ok": render_check.get("ok")},
+            error=None,
+        )
+
+        attempt_logs.append(
+            {
+                "attempt": attempt,
+                "chart_type": chart_type,
+                "operation_plan": operation_plan,
+                "planned_question": planned_question,
+                "output_image_path": output_image,
+                "step_logs": step_logs,
+                "render_check": render_check,
+            }
+        )
+        last_output_image = output_image
+        last_render_check = render_check
+        last_perception_steps = perception_steps
+        if _is_render_check_passed(render_check):
+            break
+        retry_hint = "; ".join(render_check.get("issues", [])[:4]) or "render validation failed"
+
+    if last_state is None:
+        raise RuntimeError("No perception state produced.")
+
+    chart_type = last_state.perception.get("chart_type", "unknown")
+    output: dict[str, Any] = {
+        "trace": [record.__dict__ for record in last_state.trace],
+        "output_image_path": last_output_image,
+        "operation_plan": last_operation_plan,
+        "render_check": last_render_check,
+        "attempt_logs": attempt_logs,
+        "qa_question": qa_question,
+        "update_question": update_question,
+        "question_split": split_info,
+        "perception_steps": last_perception_steps,
+    }
+
+    if not _is_render_check_passed(last_render_check):
+        output["answer"] = {
+            "answer": "Render validation failed after retries; QA skipped.",
+            "confidence": 0.0,
+            "issues": ["render_validation_failed"] + list(last_render_check.get("issues", [])),
+        }
+        return output
+
+    cluster_result = None
+    if chart_type == "scatter" and last_output_image:
+        mapping_info = last_state.perception.get("mapping_info", {})
+        svg_points = mapping_info.get("existing_points_svg", [])
+        x_ticks = mapping_info.get("x_ticks", [])
+        y_ticks = mapping_info.get("y_ticks", [])
+        existing_data = svg_points_to_data(svg_points, x_ticks, y_ticks)
+        new_data = [(p["x"], p["y"]) for p in used_scatter_points]
+        all_points = existing_data + new_data
+        if all_points:
+            cluster_result = run_dbscan(all_points, qa_question)
+            output["cluster_result"] = _sanitize_cluster_result(cluster_result)
+
+    answer_data_summary: dict[str, Any] = {
+        "update_spec": last_state.perception.get("update_spec", {}),
+        "cluster_result": cluster_result,
+        "mapping_info_summary": {
+            "num_points": last_state.perception.get("primitives_summary", {}).get("num_points"),
+            "num_bars": last_state.perception.get("primitives_summary", {}).get("num_bars"),
+            "num_areas": last_state.perception.get("primitives_summary", {}).get("num_areas"),
+            "num_lines": last_state.perception.get("primitives_summary", {}).get("num_lines"),
+        },
+        "operation_plan": last_operation_plan,
+        "perception_steps": last_perception_steps,
+        "latest_step_logs": (attempt_logs[-1].get("step_logs", []) if attempt_logs else []),
+    }
+    output["answer_input"] = {
+        "question": qa_question,
+        "chart_type": chart_type,
+        "output_image_path": last_output_image,
+        "data_summary": answer_data_summary,
+    }
+
+    output["answer"] = answer_question(
+        question=qa_question,
+        chart_type=chart_type,
+        data_summary=answer_data_summary,
+        output_image_path=last_output_image,
+        llm=llm,
+    )
+    return output
+
+
+def _resolve_questions(inputs: dict[str, Any], planner_llm: Any) -> tuple[str, str, dict[str, Any]]:
+    raw_question = str(inputs.get("question") or "").strip()
+    raw_update = str(inputs.get("update_question") or "").strip()
+    raw_qa = str(inputs.get("qa_question") or "").strip()
+    auto_split = bool(inputs.get("auto_split_question", True))
+
+    split_info: dict[str, Any] = {
+        "used": False,
+        "reason": "not_needed",
+        "source_question": raw_question,
+    }
+
+    if not raw_question and not raw_update and not raw_qa:
+        raise ValueError("At least one of question/update_question/qa_question is required.")
+
+    update_question = raw_update or raw_question
+    qa_question = raw_qa or raw_question
+    if not auto_split:
+        split_info["reason"] = "disabled"
+        return update_question, qa_question, split_info
+
+    explicit_distinct = bool(raw_update and raw_qa and raw_update != raw_qa)
+    if explicit_distinct:
+        split_info["reason"] = "explicit_distinct_inputs"
+        return update_question, qa_question, split_info
+
+    # Auto split when user provides one mixed sentence, or both fields mirror the same sentence.
+    should_split = bool(raw_question and (not raw_update or not raw_qa or (raw_update == raw_question and raw_qa == raw_question)))
+    if not should_split:
+        split_info["reason"] = "insufficient_signal"
+        return update_question, qa_question, split_info
+
+    split_payload = _llm_split_update_and_qa(raw_question, planner_llm)
+    cand_update = str(split_payload.get("update_question") or "").strip()
+    cand_qa = str(split_payload.get("qa_question") or "").strip()
+    llm_success = bool(split_payload.get("llm_success"))
+    split_info = {
+        "used": llm_success and bool(cand_update or cand_qa),
+        "reason": "llm_split",
+        "source_question": raw_question,
+        "llm_success": llm_success,
+    }
+    if cand_update:
+        update_question = cand_update
+    if cand_qa:
+        qa_question = cand_qa
+    if not llm_success:
+        split_info["reason"] = "llm_split_failed_fallback"
+    return update_question, qa_question, split_info
+
+
+def main() -> None:
+    args = _parse_args()
+    inputs = {
+        "question": args.question,
+        "text_spec": args.text_spec or None,
+        "image_path": args.image_path or None,
+        "svg_path": args.svg_path or None,
+    }
+    output = run_main(inputs)
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+def _sanitize_perception(perception: dict[str, object]) -> dict[str, object]:
+    sanitized = dict(perception)
+    mapping_info = perception.get("mapping_info")
+    if isinstance(mapping_info, dict):
+        scrubbed = dict(mapping_info)
+        for key in ("existing_points_svg", "bars", "area_top_boundary", "area_fills"):
+            scrubbed.pop(key, None)
+        sanitized["mapping_info"] = scrubbed
+    update_spec = perception.get("update_spec")
+    if isinstance(update_spec, dict) and "new_points" in update_spec:
+        update_copy = dict(update_spec)
+        update_copy["new_points"] = []
+        sanitized["update_spec"] = update_copy
+    return sanitized
+
+
+def _sanitize_cluster_result(cluster_result: dict[str, object] | None) -> dict[str, object] | None:
+    if not cluster_result:
+        return cluster_result
+    sanitized = dict(cluster_result)
+    sanitized.pop("labels", None)
+    return sanitized
+
+
+def _llm_plan_update(question: str, chart_type: str, llm: Any, retry_hint: str = "") -> dict[str, Any]:
+    prompt = (
+        "You are planning chart-edit operations.\n"
+        f"Chart type: {chart_type}\n"
+        "Return JSON only with keys:\n"
+        "- operation: one of add|delete|change|unknown\n"
+        "- normalized_question: concise imperative update instruction in English\n"
+        "- steps: array of step objects in execution order; each step has operation and question fields\n"
+        "- new_points: list of {x:number,y:number} (required for scatter add, else empty list)\n"
+        f"- retry_hint: {retry_hint or 'none'}\n"
+        "Question:\n"
+        f"{question}"
+    )
+    try:
+        response = llm.invoke(prompt)
+    except Exception:
+        return {"operation": "unknown", "normalized_question": question, "new_points": [], "llm_success": False}
+    content = getattr(response, "content", "")
+    payload = _safe_json_loads(content)
+    if not payload:
+        return {"operation": "unknown", "normalized_question": question, "new_points": [], "llm_success": False}
+
+    op = str(payload.get("operation", "unknown")).lower()
+    if op not in {"add", "delete", "change", "unknown"}:
+        op = "unknown"
+    normalized = str(payload.get("normalized_question") or question).strip() or question
+    points = _coerce_points(payload.get("new_points", []))
+    steps = _coerce_steps(payload.get("steps", []))
+    return {
+        "operation": op,
+        "normalized_question": normalized,
+        "steps": steps,
+        "new_points": points,
+        "llm_success": True,
+        "llm_raw": content,
+    }
+
+
+def _llm_split_update_and_qa(question: str, llm: Any) -> dict[str, Any]:
+    prompt = (
+        "You split mixed chart requests into update instruction and QA question.\n"
+        "Return JSON only with keys:\n"
+        "- update_question: the chart edit command only (imperative)\n"
+        "- qa_question: the question to answer after chart is updated\n"
+        "- llm_success: true\n"
+        "Rules:\n"
+        "- Output English only.\n"
+        "- If one part is missing, return empty string for that key.\n"
+        "- Do not add explanations.\n"
+        "User input:\n"
+        f"{question}"
+    )
+    try:
+        response = llm.invoke(prompt)
+    except Exception:
+        return {"update_question": question, "qa_question": question, "llm_success": False}
+    content = getattr(response, "content", "")
+    payload = _safe_json_loads(content)
+    if not payload:
+        return {"update_question": question, "qa_question": question, "llm_success": False}
+    update_q = str(payload.get("update_question") or "").strip()
+    qa_q = str(payload.get("qa_question") or "").strip()
+    return {
+        "update_question": update_q or question,
+        "qa_question": qa_q or question,
+        "llm_success": True,
+        "llm_raw": content,
+    }
+
+
+def _choose_planned_question(original: str, normalized: str) -> str:
+    o = (original or "").strip()
+    n = (normalized or "").strip()
+    if not n:
+        return o
+    # Preserve explicit numeric series payload for add operations.
+    if "[" in o and "]" in o and not ("[" in n and "]" in n):
+        return o
+    # Preserve multi-op intent when normalization collapses operations.
+    if _count_ops(o) > _count_ops(n):
+        return o
+    return n
+
+
+def _count_ops(text: str) -> int:
+    if not text:
+        return 0
+    patterns = [
+        r"(add|append|insert)",
+        r"(remove|delete|drop)",
+        r"(change|update|modify|set\\s+to)",
+    ]
+    count = 0
+    for p in patterns:
+        if re.search(p, text, re.IGNORECASE):
+            count += 1
+    return count
+
+
+def _safe_json_loads(content: str) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _coerce_points(raw: Any) -> list[dict[str, float]]:
+    if not isinstance(raw, list):
+        return []
+    points: list[dict[str, float]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            points.append({"x": float(item.get("x")), "y": float(item.get("y"))})
+        except Exception:
+            continue
+    return points
+
+
+def _coerce_steps(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        op = str(item.get("operation") or "unknown").lower()
+        if op not in {"add", "delete", "change", "unknown"}:
+            op = "unknown"
+        question = str(item.get("question") or "").strip()
+        points = _coerce_points(item.get("new_points", []))
+        if not question:
+            continue
+        out.append({"operation": op, "question": question, "new_points": points})
+    return out
+
+
+def _operation_steps_from_plan(operation_plan: dict[str, Any], planned_question: str) -> list[dict[str, Any]]:
+    steps = operation_plan.get("steps", [])
+    if isinstance(steps, list) and steps:
+        return steps
+    return [
+        {
+            "operation": str(operation_plan.get("operation") or "unknown"),
+            "question": planned_question,
+            "new_points": operation_plan.get("new_points", []),
+        }
+    ]
+
+
+def _step_paths(svg_path: str, chart_type: str, idx: int, total: int) -> tuple[str | None, str | None]:
+    final_svg, final_png = default_output_paths(svg_path, chart_type)
+    if idx == total - 1:
+        return final_svg, final_png
+    stem_svg = Path(final_svg).stem
+    stem_png = Path(final_png).stem
+    step_svg = str(Path(final_svg).with_name(f"{stem_svg}_step{idx+1}.svg"))
+    step_png = str(Path(final_png).with_name(f"{stem_png}_step{idx+1}.png"))
+    return step_svg, step_png
+
+
+def _execute_planned_steps(
+    *,
+    inputs: dict[str, Any],
+    planned_question: str,
+    operation_plan: dict[str, Any],
+    chart_type: str,
+    llm: Any,
+    used_scatter_points: list[dict[str, float]],
+) -> tuple[str | None, list[dict[str, Any]], list[dict[str, Any]], Any, list[dict[str, float]]]:
+    steps = _operation_steps_from_plan(operation_plan, planned_question)
+    step_logs: list[dict[str, Any]] = []
+    perception_steps: list[dict[str, Any]] = []
+    current_svg = str(inputs["svg_path"])
+    last_state = None
+    output_image = None
+    scatter_points = list(used_scatter_points)
+
+    for idx, step in enumerate(steps):
+        step_q = str(step.get("question") or planned_question)
+        step_inputs = dict(inputs)
+        step_inputs["svg_path"] = current_svg
+        step_inputs["question"] = step_q
+        step_inputs["chart_type_hint"] = chart_type
+        state = run_perception(step_inputs)
+        last_state = state
+        perception_steps.append(
+            {
+                "index": idx + 1,
+                "operation": step.get("operation"),
+                "question": step_q,
+                "perception": _sanitize_perception(state.perception),
+            }
+        )
+        mapping_info = state.perception.get("mapping_info", {})
+        step_svg, step_png = _step_paths(str(inputs["svg_path"]), chart_type, idx, len(steps))
+
+        if chart_type == "scatter":
+            points = _coerce_points(step.get("new_points", []))
+            if not points:
+                points = _coerce_points(operation_plan.get("new_points", []))
+            if not points:
+                raise ValueError(f"step {idx+1}: scatter points missing")
+            scatter_points = points
+            output_image = update_scatter_svg(
+                current_svg,
+                points,
+                mapping_info,
+                output_path=step_png,
+                svg_output_path=step_svg,
+                chart_type=chart_type,
+                question=step_q,
+                llm=llm,
+            )
+        elif chart_type == "line":
+            output_image = update_line_svg(
+                current_svg,
+                step_q,
+                mapping_info,
+                output_path=step_png,
+                svg_output_path=step_svg,
+                llm=llm,
+            )
+        elif chart_type == "area":
+            output_image = update_area_svg(
+                current_svg,
+                step_q,
+                mapping_info,
+                output_path=step_png,
+                svg_output_path=step_svg,
+                llm=llm,
+            )
+        else:
+            raise ValueError(f"unsupported chart type: {chart_type}")
+
+        current_svg = step_svg or current_svg
+        step_logs.append(
+            {
+                "index": idx + 1,
+                "operation": step.get("operation"),
+                "question": step_q,
+                "output_svg_path": step_svg,
+                "output_image_path": output_image,
+            }
+        )
+
+    return output_image, step_logs, perception_steps, last_state, scatter_points
+
+
+def _resolve_supported_chart_type(perception: dict[str, Any]) -> str:
+    chart_type = str(perception.get("chart_type") or "").lower()
+    if chart_type in SUPPORTED_SVG_CHART_TYPES:
+        return chart_type
+    summary = perception.get("primitives_summary", {}) or {}
+    try:
+        num_areas = int(summary.get("num_areas") or 0)
+        num_lines = int(summary.get("num_lines") or 0)
+        num_points = int(summary.get("num_points") or 0)
+    except Exception:
+        num_areas = 0
+        num_lines = 0
+        num_points = 0
+    if num_areas > 0:
+        return "area"
+    if num_lines > 0:
+        return "line"
+    if num_points > 0:
+        return "scatter"
+    return chart_type or "unknown"
+
+
+def _validate_render_with_programmatic(
+    *,
+    output_image: str | None,
+    chart_type: str,
+    update_spec: dict[str, Any],
+    step_logs: list[dict[str, Any]],
+    llm: Any,
+) -> dict[str, Any]:
+    basic_check = validate_render(output_image, chart_type, update_spec, llm=None)
+    if not basic_check.get("ok"):
+        return basic_check
+
+    prog = _programmatic_validate(chart_type=chart_type, step_logs=step_logs)
+    if prog is not None:
+        if prog.get("ok"):
+            return {
+                "ok": True,
+                "confidence": float(prog.get("confidence", 0.98)),
+                "issues": list(prog.get("issues", [])),
+                "programmatic": True,
+            }
+        return {
+            "ok": False,
+            "confidence": float(prog.get("confidence", 0.1)),
+            "issues": list(prog.get("issues", [])),
+            "programmatic": True,
+        }
+
+    return validate_render(output_image, chart_type, update_spec, llm=llm)
+
+
+def _programmatic_validate(chart_type: str, step_logs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if chart_type != "area":
+        return None
+    change_step = None
+    for step in reversed(step_logs):
+        step_op = str(step.get("operation", "")).lower()
+        step_q = str(step.get("question", ""))
+        if step_op == "change" or _looks_like_area_change_question(step_q):
+            change_step = step
+            break
+    if not change_step:
+        return None
+    svg_path = str(change_step.get("output_svg_path") or "").strip()
+    question = str(change_step.get("question") or "").strip()
+    if not svg_path or not question:
+        return None
+    if not os.path.exists(svg_path):
+        return {"ok": False, "confidence": 0.0, "issues": [f"programmatic: svg not found: {svg_path}"]}
+
+    try:
+        with open(svg_path, "r", encoding="utf-8") as handle:
+            content = handle.read()
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        root = ET.parse(svg_path, parser=parser).getroot()
+        axes = root.find(f'.//{{{area_ops.SVG_NS}}}g[@id="axes_1"]')
+        if axes is None:
+            return {"ok": False, "confidence": 0.0, "issues": ["programmatic: axes_1 missing"]}
+
+        perceived = perceive_svg(svg_path, question=question, llm=None)
+        mapping = perceived.get("mapping_info", {}) if isinstance(perceived, dict) else {}
+        x_ticks = mapping.get("x_ticks", []) if isinstance(mapping, dict) else []
+        y_ticks = mapping.get("y_ticks", []) if isinstance(mapping, dict) else []
+        if len(x_ticks) < 2 or len(y_ticks) < 2:
+            return {"ok": False, "confidence": 0.0, "issues": ["programmatic: insufficient axis ticks"]}
+
+        _, legend_items = area_ops._extract_legend_items(root, content)
+        labels = [item["label"] for item in legend_items if item.get("label")]
+        parsed = area_ops._parse_year_value_update(question, labels, llm=None)
+        if parsed is None:
+            return {"ok": False, "confidence": 0.0, "issues": ["programmatic: cannot parse change request"]}
+        label, year_value, expected_value, _ = parsed
+
+        target_fill = None
+        for item in legend_items:
+            if item.get("label") == label:
+                target_fill = item.get("fill")
+                break
+        if not target_fill:
+            return {"ok": False, "confidence": 0.0, "issues": [f"programmatic: legend label missing: {label}"]}
+
+        areas = area_ops._extract_area_groups(axes)
+        target_idx = area_ops._find_area_by_fill(areas, target_fill)
+        if target_idx is None:
+            return {"ok": False, "confidence": 0.0, "issues": [f"programmatic: area fill missing for {label}"]}
+
+        x_values, series_values = area_ops._area_series_values(areas, y_ticks)
+        target_x = area_ops._data_to_pixel(year_value, x_ticks)
+        year_idx = min(range(len(x_values)), key=lambda i: abs(x_values[i] - target_x))
+        actual_value = float(series_values[target_idx][year_idx])
+        tolerance = max(1e-3, abs(expected_value) * 1e-3)
+        if abs(actual_value - expected_value) <= tolerance:
+            return {
+                "ok": True,
+                "confidence": 0.99,
+                "issues": [],
+            }
+        return {
+            "ok": False,
+            "confidence": 0.05,
+            "issues": [
+                f"programmatic: expected {label}@{int(year_value)}={expected_value}, got {actual_value}",
+            ],
+        }
+    except Exception as exc:
+        return {"ok": False, "confidence": 0.0, "issues": [f"programmatic exception: {exc}"]}
+
+
+def _looks_like_area_change_question(question: str) -> bool:
+    if not question:
+        return False
+    has_year = bool(re.search(r"\b(19|20)\d{2}\b", question))
+    if not has_year:
+        return False
+    return bool(
+        re.search(
+            r"(increase|decrease|reduce|raise|update|change|set\s+to|to\s+\d|modify)",
+            question,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _is_render_check_passed(render_check: dict[str, Any]) -> bool:
+    if not bool(render_check.get("ok")):
+        return False
+    issues = [str(x) for x in render_check.get("issues", [])]
+    hard_fail_markers = {"llm_check_failed", "invalid image size", "image appears empty"}
+    return not any(marker in issues for marker in hard_fail_markers)
+
+
+if __name__ == "__main__":
+    main()

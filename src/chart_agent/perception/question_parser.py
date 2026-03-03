@@ -1,0 +1,147 @@
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+_POINT_PATTERN = re.compile(r"\((-?\d+(?:\.\d+)?)[\s,]+(-?\d+(?:\.\d+)?)\)")
+_BRACKET_PAIR_PATTERN = re.compile(
+    r"\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]"
+)
+
+
+def parse_question(
+    question: str,
+    llm: Any | None = None,
+    chart_type_hint: str | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    issues: list[str] = []
+    llm_used = False
+    llm_success = False
+
+    scatter_like = _looks_like_scatter_request(question)
+    hint = str(chart_type_hint or "").strip().lower()
+    if hint and hint not in ("scatter", "graph"):
+        scatter_like = False
+
+    if llm is not None:
+        llm_used = True
+        llm_result = _parse_with_llm(question, llm)
+        if llm_result is not None:
+            llm_success = True
+            llm_points = llm_result.get("new_points", [])
+            if not scatter_like:
+                llm_points = []
+            update_spec = {
+                "new_points": llm_points,
+                "raw": question,
+                "llm_used": llm_used,
+                "llm_success": llm_success,
+                "llm_fallback_used": False,
+            }
+            llm_issues = llm_result.get("issues", [])
+            if llm_issues:
+                issues.extend(llm_issues)
+            if update_spec["new_points"]:
+                return update_spec, issues
+            issues.append("LLM parsed no new points from question; falling back to regex.")
+            update_spec = _parse_with_regex(question)
+            if not scatter_like:
+                update_spec["new_points"] = []
+            update_spec["llm_used"] = llm_used
+            update_spec["llm_success"] = llm_success
+            update_spec["llm_fallback_used"] = True
+            return update_spec, issues
+
+    update_spec = _parse_with_regex(question)
+    if not scatter_like:
+        update_spec["new_points"] = []
+    update_spec["llm_used"] = llm_used
+    update_spec["llm_success"] = llm_success
+    update_spec["llm_fallback_used"] = True if llm_used else False
+    if not update_spec["new_points"]:
+        issues.append("No new points parsed from question.")
+    return update_spec, issues
+
+
+def _parse_with_regex(question: str) -> dict[str, Any]:
+    points = []
+    for match in _POINT_PATTERN.findall(question):
+        x_str, y_str = match
+        try:
+            x_val = float(x_str)
+            y_val = float(y_str)
+        except ValueError:
+            continue
+        points.append({"x": x_val, "y": y_val})
+
+    for match in _BRACKET_PAIR_PATTERN.findall(question):
+        x_str, y_str = match
+        try:
+            x_val = float(x_str)
+            y_val = float(y_str)
+        except ValueError:
+            continue
+        points.append({"x": x_val, "y": y_val})
+
+    return {
+        "new_points": points,
+        "raw": question,
+    }
+
+
+def _parse_with_llm(question: str, llm: Any) -> dict[str, Any] | None:
+    prompt = (
+        "You are parsing a chart-update request. "
+        "Identify any explicit numeric updates in the question. "
+        "Return JSON only with keys: new_points (list of {x,y}), issues (list). "
+        "If the chart type is unclear or not scatter, leave new_points empty and add a note in issues."
+        f"\nQuestion: {question}"
+    )
+    try:
+        response = llm.invoke(prompt)
+    except Exception:
+        return None
+    content = getattr(response, "content", "")
+    payload = _safe_json_loads(content)
+    if not payload:
+        return None
+    points = payload.get("new_points", [])
+    if not isinstance(points, list):
+        points = []
+    cleaned = []
+    for item in points:
+        if not isinstance(item, dict):
+            continue
+        try:
+            x_val = float(item.get("x"))
+            y_val = float(item.get("y"))
+        except (TypeError, ValueError):
+            continue
+        cleaned.append({"x": x_val, "y": y_val})
+    payload["new_points"] = cleaned
+    return payload
+
+
+def _safe_json_loads(content: str) -> dict[str, Any] | None:
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if not match:
+            return None
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+
+
+def _looks_like_scatter_request(question: str) -> bool:
+    text = (question or "").lower()
+    if "scatter" in text or "point" in text or "points" in text:
+        return True
+    if "coordinate" in text or "x=" in text or "y=" in text:
+        return True
+    if _POINT_PATTERN.search(question):
+        return True
+    return False
