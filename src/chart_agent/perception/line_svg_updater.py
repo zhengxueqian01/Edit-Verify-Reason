@@ -1097,10 +1097,8 @@ def _rescale_line_chart_after_removal(
     old_min_pixel = old_ticks_sorted[0][0]
     old_max_pixel = old_ticks_sorted[-1][0]
 
-    # Keep the same tick count as the original axis to avoid dropping high-end ticks.
-    new_tick_values = _build_ticks_by_step(new_min, new_max, step)
-    if len(new_tick_values) != tick_count_hint:
-        new_tick_values = _build_ticks(new_min, new_max, tick_count_hint)
+    # Keep tick count stable to avoid cloning/removing SVG tick groups with duplicate ids.
+    new_tick_values = _build_ticks(new_min, new_max, tick_count_hint)
     new_ticks = [
         (_map_data_to_pixel(val, new_min, new_max, old_min_pixel, old_max_pixel), val)
         for val in new_tick_values
@@ -1413,7 +1411,6 @@ def _update_y_axis_ticks(
             axis_scale=axis_scale,
         )
 
-
 def _extract_tick_text_anchor(
     tick_group: ET.Element,
 ) -> tuple[float | None, float | None, float | None]:
@@ -1479,13 +1476,15 @@ def _update_tick_label(
     for child in list(text_group):
         text_group.remove(child)
 
-    x_val = text_x if text_x is not None else _fallback_tick_text_x(tick_group)
+    # Use one consistent x-anchor for all y tick labels.
+    x_val = _fallback_tick_text_x(tick_group)
     text_elem = ET.SubElement(text_group, f"{{{SVG_NS}}}text")
     text_elem.set("x", f"{x_val:.6f}")
     text_elem.set("y", f"{new_y:.6f}")
     text_elem.set("font-size", "10")
     text_elem.set("font-family", "DejaVu Sans")
     text_elem.set("fill", "#000000")
+    text_elem.set("text-anchor", "end")
     text_elem.text = _format_tick_label(value, axis_scale=axis_scale)
 
 
