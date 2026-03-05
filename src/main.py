@@ -13,10 +13,11 @@ PROJECT_SRC = os.path.abspath(os.path.dirname(__file__))
 if PROJECT_SRC not in sys.path:
     sys.path.insert(0, PROJECT_SRC)
 
-from chart_agent.config import get_model_config, get_task_model_config
+from chart_agent.config import get_task_model_config
 from chart_agent.core.perception_graph import run_perception
 from chart_agent.core.trace import append_trace
 from chart_agent.core.answerer import answer_question
+from chart_agent.core.vision_tool_phase import run_visual_tool_phase
 from chart_agent.core.clusterer import run_dbscan, svg_points_to_data
 from chart_agent.llm_factory import make_llm
 from chart_agent.perception.scatter_svg_updater import update_scatter_svg
@@ -44,9 +45,28 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
     # Disable LangSmith tracing in this project runtime unless the user re-enables it explicitly.
     os.environ["LANGSMITH_TRACING"] = "false"
     os.environ["LANGCHAIN_TRACING_V2"] = "false"
-    planner_llm = make_llm(get_model_config("gpt"))
-    llm = make_llm(get_task_model_config("router"))
-    update_question, qa_question, split_info = _resolve_questions(inputs, planner_llm)
+    splitter_llm = make_llm(get_task_model_config("splitter"))
+    planner_llm = make_llm(get_task_model_config("planner"))
+    executor_llm = make_llm(get_task_model_config("executor"))
+    answer_llm = make_llm(get_task_model_config("answer"))
+    tool_planner_llm = make_llm(get_task_model_config("tool_planner"))
+    update_question, qa_question, split_info = _resolve_questions(inputs, splitter_llm)
+    original_combined_question = f"{update_question}. {qa_question}".strip()
+    original_image_path = _resolve_original_image_path(inputs)
+    original_chart_type = str(inputs.get("chart_type_hint") or "unknown").strip().lower() or "unknown"
+    answer_original_input = {
+        "question": original_combined_question,
+        "chart_type": original_chart_type,
+        "output_image_path": original_image_path,
+        "data_summary": {},
+    }
+    answer_original = answer_question(
+        qa_question=original_combined_question,
+        chart_type=original_chart_type,
+        data_summary={},
+        output_image_path=original_image_path,
+        llm=answer_llm,
+    )
     if not inputs.get("svg_path"):
         raise ValueError("This entry only supports SVG-based updates for line/area/scatter.")
 
@@ -111,7 +131,7 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
                 planned_question=planned_question,
                 operation_plan=operation_plan,
                 chart_type=chart_type,
-                llm=llm,
+                llm=executor_llm,
                 used_scatter_points=used_scatter_points,
             )
         except Exception as exc:
@@ -141,7 +161,7 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
             chart_type=chart_type,
             update_spec=(last_state.perception if last_state else state.perception).get("update_spec", {}),
             step_logs=step_logs,
-            llm=llm,
+            llm=executor_llm,
         )
         append_trace(
             state.trace,
@@ -185,6 +205,8 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
         "update_question": update_question,
         "question_split": split_info,
         "perception_steps": last_perception_steps,
+        "answer_original_input": answer_original_input,
+        "answer_original": answer_original,
     }
 
     if not _is_render_check_passed(last_render_check):
@@ -228,17 +250,59 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
         "data_summary": answer_data_summary,
     }
 
-    output["answer"] = answer_question(
-        question=qa_question,
+    initial_answer = answer_question(
+        qa_question=qa_question,
         chart_type=chart_type,
         data_summary=answer_data_summary,
         output_image_path=last_output_image,
-        llm=llm,
+        llm=answer_llm,
     )
+    output["answer_initial"] = initial_answer
+    output["answer"] = initial_answer
+
+    final_step_svg_path = ""
+    latest_step_logs = answer_data_summary.get("latest_step_logs", [])
+    if isinstance(latest_step_logs, list):
+        for step in reversed(latest_step_logs):
+            if not isinstance(step, dict):
+                continue
+            p = str(step.get("output_svg_path") or "").strip()
+            if p:
+                final_step_svg_path = p
+                break
+
+    tool_phase = run_visual_tool_phase(
+        question=qa_question,
+        chart_type=chart_type,
+        data_summary={},
+        image_path=last_output_image,
+        svg_path=final_step_svg_path or None,
+        llm=tool_planner_llm,
+    )
+    output["tool_phase"] = tool_phase
+
+    augmented_path = str(tool_phase.get("augmented_image_path") or "").strip()
+    if tool_phase.get("ok") and augmented_path:
+        output["answer_input_tool_augmented"] = {
+            "question": qa_question,
+            "chart_type": chart_type,
+            "output_image_path": augmented_path,
+            "data_summary": answer_data_summary,
+        }
+        output["answer_tool_augmented"] = answer_question(
+            qa_question=qa_question,
+            chart_type=chart_type,
+            data_summary=answer_data_summary,
+            output_image_path=augmented_path,
+            llm=answer_llm,
+        )
+        output["answer"] = output["answer_tool_augmented"]
+    else:
+        output["answer_tool_augmented"] = None
     return output
 
 
-def _resolve_questions(inputs: dict[str, Any], planner_llm: Any) -> tuple[str, str, dict[str, Any]]:
+def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, str, dict[str, Any]]:
     raw_question = str(inputs.get("question") or "").strip()
     raw_update = str(inputs.get("update_question") or "").strip()
     raw_qa = str(inputs.get("qa_question") or "").strip()
@@ -259,25 +323,20 @@ def _resolve_questions(inputs: dict[str, Any], planner_llm: Any) -> tuple[str, s
         split_info["reason"] = "disabled"
         return update_question, qa_question, split_info
 
-    explicit_distinct = bool(raw_update and raw_qa and raw_update != raw_qa)
-    if explicit_distinct:
-        split_info["reason"] = "explicit_distinct_inputs"
+    # Prefer model-based split whenever a full question is available.
+    split_source = raw_question or f"{update_question}. {qa_question}".strip()
+    if not split_source:
+        split_info["reason"] = "empty_split_source"
         return update_question, qa_question, split_info
 
-    # Auto split when user provides one mixed sentence, or both fields mirror the same sentence.
-    should_split = bool(raw_question and (not raw_update or not raw_qa or (raw_update == raw_question and raw_qa == raw_question)))
-    if not should_split:
-        split_info["reason"] = "insufficient_signal"
-        return update_question, qa_question, split_info
-
-    split_payload = _llm_split_update_and_qa(raw_question, planner_llm)
+    split_payload = _llm_split_update_and_qa(split_source, splitter_llm)
     cand_update = str(split_payload.get("update_question") or "").strip()
     cand_qa = str(split_payload.get("qa_question") or "").strip()
     llm_success = bool(split_payload.get("llm_success"))
     split_info = {
         "used": llm_success and bool(cand_update or cand_qa),
         "reason": "llm_split",
-        "source_question": raw_question,
+        "source_question": split_source,
         "llm_success": llm_success,
     }
     if cand_update:
@@ -287,6 +346,13 @@ def _resolve_questions(inputs: dict[str, Any], planner_llm: Any) -> tuple[str, s
     if not llm_success:
         split_info["reason"] = "llm_split_failed_fallback"
     return update_question, qa_question, split_info
+
+
+def _resolve_original_image_path(inputs: dict[str, Any]) -> str | None:
+    image_path = str(inputs.get("image_path") or "").strip()
+    if image_path and Path(image_path).suffix.lower() == ".png" and Path(image_path).exists():
+        return image_path
+    return None
 
 
 def main() -> None:
@@ -368,10 +434,12 @@ def _llm_split_update_and_qa(question: str, llm: Any) -> dict[str, Any]:
         "You split mixed chart requests into update instruction and QA question.\n"
         "Return JSON only with keys:\n"
         "- update_question: the chart edit command only (imperative)\n"
-        "- qa_question: the question to answer after chart is updated\n"
+        "- qa_question: only the pure QA query to answer after chart is updated\n"
         "- llm_success: true\n"
         "Rules:\n"
         "- Output English only.\n"
+        "- qa_question must NOT contain update preconditions like 'after deleting ...'.\n"
+        "- Remove leading operation clauses from qa_question, keep only the actual question part.\n"
         "- If one part is missing, return empty string for that key.\n"
         "- Do not add explanations.\n"
         "User input:\n"

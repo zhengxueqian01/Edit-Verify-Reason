@@ -84,7 +84,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     ),
     "claude": ModelConfig(
         name="claude",
-        model=_get_env("CLAUDE_MODEL", "claude-sonnet-4-5")
+        model=_get_env("CLAUDE_MODEL", "claude-sonnet-4-6")
         or "claude-sonnet-4-5",
         api_key=AIHUBMIX_API_KEY,
         base_url=_get_env("CLAUDE_BASE_URL", "https://aihubmix.com/v1"),
@@ -92,7 +92,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     ),
     "gemini": ModelConfig(
         name="gemini",
-        model=_get_env("GEMINI_MODEL", "gemini-2.5-pro") or "gemini-2.5-pro",
+        model=_get_env("GEMINI_MODEL", "gemini-3-flash-preview") or "gemini-2.5-pro",
         api_key=AIHUBMIX_API_KEY,
         base_url=_get_env("GEMINI_BASE_URL", "https://aihubmix.com/v1"),
         temperature=_get_env_float("GEMINI_TEMPERATURE", 0.0),
@@ -102,6 +102,10 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
 DEFAULT_MODEL = _get_env("DEFAULT_MODEL", "gpt") or "gpt"
 
 TASK_MODELS: dict[str, str] = {
+    "splitter": _get_env("SPLITTER_MODEL", _get_env("ROUTER_MODEL", "gpt") or "gpt") or "gpt",
+    "planner": _get_env("PLANNER_MODEL", _get_env("ROUTER_MODEL", "gpt") or "gpt") or "gpt",
+    "tool_planner": _get_env("TOOL_PLANNER_MODEL", _get_env("ROUTER_MODEL", "gpt") or "gpt") or "gpt",
+    "executor": _get_env("EXECUTOR_MODEL", _get_env("ROUTER_MODEL", "gpt") or "gpt") or "gpt",
     "router": _get_env("ROUTER_MODEL", "gpt") or "gpt",
     "validator": _get_env("VALIDATOR_MODEL", "qwen") or "qwen",
     "answer": _get_env("ANSWER_MODEL", "gpt")

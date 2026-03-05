@@ -9,7 +9,7 @@ from typing import Any
 
 def answer_question(
     *,
-    question: str,
+    qa_question: str,
     chart_type: str,
     data_summary: dict[str, Any],
     output_image_path: str | None,
@@ -18,32 +18,35 @@ def answer_question(
     cluster_result = data_summary.get("cluster_result")
     prompt_text = (
         "Return ONLY valid JSON. Do not include any extra text.\n"
-        "Schema: {\"answer\": string, \"confidence\": number, \"issues\": [string]}\n"
-        "Use the provided data summary to answer the question.\n"
+        "Schema: {\"answer\": string, \"confidence\": number, \"reason\": [string]}\n"
+        # "Use the image to answer the question.\n"
         "Rule: Do not infer year from sparse x-axis tick labels only; infer the exact year from point position across the full yearly sequence.\n"
-        f"Question: {question}\n"
+        f"QA Question: {qa_question}\n"
         f"Chart type: {chart_type}\n"
         f"Image path (for reference only): {output_image_path}\n"
-        f"Data summary: {json.dumps(data_summary, ensure_ascii=False)}"
+        # f"Data summary: {json.dumps(data_summary, ensure_ascii=False)}"
     )
+    # print(qa_question)
 
     content = ""
     try:
         response = _invoke_multimodal_or_text(llm, prompt_text, output_image_path)
         content = _coerce_content_to_text(getattr(response, "content", ""))
     except Exception as exc:
-        if cluster_result and "cluster" in question.lower():
+        if cluster_result and "cluster" in qa_question.lower():
             return {
                 "answer": f"DBSCAN found {cluster_result.get('clusters')} clusters.",
                 "confidence": 0.7,
                 "issues": ["llm_call_failed"],
                 "dbscan_result": cluster_result,
+                "prompt": prompt_text,
             }
         return {
             "answer": "LLM call failed; unable to answer.",
-                "confidence": 0.0,
-                "issues": [str(exc)],
-            }
+            "confidence": 0.0,
+            "issues": [str(exc)],
+            "prompt": prompt_text,
+        }
 
     payload = _safe_json_loads(content)
     if not payload:
@@ -52,14 +55,16 @@ def answer_question(
             "confidence": 0.0,
             "issues": ["llm_response_not_json"],
             "llm_raw": content,
+            "prompt": prompt_text,
         }
-        if cluster_result and "cluster" in question.lower():
+        if cluster_result and "cluster" in qa_question.lower():
             fallback["answer"] = f"DBSCAN found {cluster_result.get('clusters')} clusters."
             fallback["confidence"] = 0.7
             fallback["dbscan_result"] = cluster_result
         return fallback
 
     payload["llm_raw"] = content
+    payload["prompt"] = prompt_text
     if cluster_result:
         payload["dbscan_result"] = cluster_result
     return payload

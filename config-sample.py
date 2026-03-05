@@ -54,6 +54,10 @@ test_accuracy_model = "gpt"
 
 # 各任务使用的模型配置（如果未指定则使用 DEFAULT_MODEL）
 TASK_MODELS = {
+    "splitter": "gpt",      # 问题切分模型（拆分 update_question / qa_question）
+    "planner": "qwen",      # 更新步骤规划模型（operation planning）
+    "tool_planner": "gpt",  # QA增强工具选择模型（tool_calls 规划）
+    "executor": "qwen",     # 更新执行辅助模型（解析更新细节）
     "router": "qwen",      # 路由任务使用的模型（用于分析问题类型）
     "validator": "qwen",    # 验证任务使用的模型（用于验证增强图片）
     "answer": "claude-sonnet-4-5",       # 答案生成任务使用的模型（用于生成最终答案）

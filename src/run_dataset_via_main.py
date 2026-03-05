@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from main import run_main
+from chart_agent.config import get_task_model_config
 from chart_agent.perception.svg_renderer import default_output_paths
 
 
@@ -27,11 +28,6 @@ def parse_args() -> argparse.Namespace:
         help="Dataset folder path, e.g. dataset/task1-mix-area/add-change",
     )
     parser.add_argument("--qa-index", type=int, default=0, help="QA index from JSON QA list.")
-    parser.add_argument(
-        "--question-only",
-        action="store_true",
-        help="Use QA question as update instruction (skip synthesized update instruction).",
-    )
     parser.add_argument(
         "--max-render-retries",
         type=int,
@@ -77,63 +73,6 @@ def choose_qa(payload: dict[str, Any], qa_index: int) -> tuple[str, Any]:
     raise ValueError("No question found in JSON.")
 
 
-def synthesize_instruction(payload: dict[str, Any]) -> str:
-    op = str(payload.get("operation") or "").lower()
-    target = payload.get("operation_target") or {}
-    change = payload.get("data_change") or {}
-    chart_type = str(payload.get("chart_type") or "").lower()
-    parts: list[str] = []
-
-    if chart_type == "scatter":
-        points = change.get("points") if isinstance(change, dict) else None
-        if isinstance(points, list) and points:
-            text_points: list[str] = []
-            for p in points:
-                if not isinstance(p, dict):
-                    continue
-                try:
-                    text_points.append(f"({float(p.get('x'))}, {float(p.get('y'))})")
-                except Exception:
-                    continue
-            if text_points:
-                parts.append("Add points " + ", ".join(text_points))
-
-    if "delete" in op or "del" in op:
-        names = target.get("category_name") if isinstance(target, dict) else None
-        if not names and isinstance(target, dict):
-            names = target.get("del_category")
-        if isinstance(names, list) and names:
-            parts.append("Delete categories " + ", ".join(f"\"{n}\"" for n in names))
-        elif isinstance(names, str) and names.strip():
-            parts.append(f"Delete category \"{names.strip()}\"")
-
-    add_block = change.get("add") if isinstance(change, dict) else None
-    if isinstance(add_block, dict):
-        add_name = target.get("add_category") if isinstance(target, dict) else None
-        values = add_block.get("values")
-        if isinstance(values, list) and values:
-            values_text = ", ".join(str(v) for v in values)
-            if isinstance(add_name, str) and add_name.strip():
-                parts.append(f"Add series \"{add_name.strip()}\" : [{values_text}]")
-            else:
-                parts.append(f"Add series: [{values_text}]")
-
-    change_block = change.get("change") if isinstance(change, dict) else None
-    if isinstance(change_block, dict):
-        change_name = target.get("change_category") if isinstance(target, dict) else None
-        years = change_block.get("years")
-        values = change_block.get("values")
-        year = years[0] if isinstance(years, list) and years else None
-        value = values[0] if isinstance(values, list) and values else None
-        if year is not None and value is not None:
-            if isinstance(change_name, str) and change_name.strip():
-                parts.append(f"Change \"{change_name.strip()}\" at year {year} to {value}")
-            else:
-                parts.append(f"Change value at year {year} to {value}")
-
-    return "; then ".join(parts).strip()
-
-
 def list_case_dirs(input_dir: Path) -> list[Path]:
     out: list[Path] = []
     for p in sorted(input_dir.iterdir()):
@@ -152,6 +91,15 @@ def extract_answer_text(result: dict[str, Any]) -> str:
         return str(answer.get("answer") or "").strip()
     if isinstance(answer, str):
         return answer.strip()
+    return ""
+
+
+def extract_answer_text_by_key(result: dict[str, Any], key: str) -> str:
+    value = result.get(key)
+    if isinstance(value, dict):
+        return str(value.get("answer") or "").strip()
+    if isinstance(value, str):
+        return value.strip()
     return ""
 
 
@@ -236,6 +184,11 @@ def main() -> None:
 
     parent_name = input_dir.parent.name.strip() if input_dir.parent else ""
     child_name = input_dir.name.strip() or "dataset_run"
+    if parent_name == "dataset":
+        try:
+            parent_name = get_task_model_config("answer").name
+        except Exception:
+            parent_name = "answer"
     if parent_name:
         rel_name = f"{parent_name}_{child_name}"
     else:
@@ -253,6 +206,10 @@ def main() -> None:
     failed = 0
     answer_evaluated = 0
     answer_matched = 0
+    answer_original_evaluated = 0
+    answer_original_matched = 0
+    answer_initial_evaluated = 0
+    answer_initial_matched = 0
 
     for case_dir in case_dirs:
         if args.limit and total >= args.limit:
@@ -261,28 +218,28 @@ def main() -> None:
         case_id = case_dir.name
         json_path = case_dir / f"{case_id}.json"
         svg_path = case_dir / f"{case_id}.svg"
+        image_path = case_dir / f"{case_id}.png"
         case_out_dir = run_dir / case_id
         case_out_dir.mkdir(parents=True, exist_ok=True)
 
         payload = load_json(json_path)
         qa_question, expected_answer = choose_qa(payload, args.qa_index)
-        update_question = qa_question if args.question_only else (synthesize_instruction(payload) or qa_question)
+        split_update_question = ""
 
         result: dict[str, Any]
         err = ""
         try:
             result = run_main(
                 {
-                    "question": f"{update_question}. {qa_question}",
-                    "update_question": update_question,
-                    "qa_question": qa_question,
-                    "chart_type_hint": str((payload or {}).get("chart_type") or "").lower(),
+                    # Always pass the original QA sentence and let run_main split it into
+                    # update_question / qa_question with the splitter model.
+                    "question": qa_question,
                     "max_render_retries": args.max_render_retries,
                     "svg_path": str(svg_path),
                     "text_spec": None,
-                    "image_path": None,
                 }
             )
+            split_update_question = str(result.get("update_question") or "")
             result["case"] = case_id
             result["case_dir"] = str(case_dir)
             result["json_path"] = str(json_path)
@@ -298,13 +255,80 @@ def main() -> None:
                 png_target = case_out_dir / f"{case_id}_updated{output_image_path.suffix.lower() or '.png'}"
                 shutil.copy2(output_image_path, png_target)
                 result["record_image_path"] = str(png_target)
+            tool_phase = result.get("tool_phase")
+            if isinstance(tool_phase, dict):
+                aug_svg_raw = str(tool_phase.get("augmented_svg_path") or "").strip()
+                if aug_svg_raw:
+                    aug_svg_path = Path(aug_svg_raw).expanduser()
+                    if aug_svg_path.exists() and aug_svg_path.is_file():
+                        aug_svg_target = case_out_dir / f"{case_id}_tool_aug.svg"
+                        shutil.copy2(aug_svg_path, aug_svg_target)
+                        result["record_tool_aug_svg_path"] = str(aug_svg_target)
+                aug_raw = str(tool_phase.get("augmented_image_path") or "").strip()
+                if aug_raw:
+                    aug_path = Path(aug_raw).expanduser()
+                    if aug_path.exists() and aug_path.is_file():
+                        aug_suffix = aug_path.suffix.lower() or ".png"
+                        aug_target = case_out_dir / f"{case_id}_tool_aug{aug_suffix}"
+                        shutil.copy2(aug_path, aug_target)
+                        result["record_tool_aug_image_path"] = str(aug_target)
 
-            answer_text = extract_answer_text(result)
-            answer_match = is_answer_match(expected_answer, answer_text)
+            answer_initial_text = extract_answer_text_by_key(result, "answer_initial")
+            answer_initial_match = is_answer_match(expected_answer, answer_initial_text)
+            answer_original_text = extract_answer_text_by_key(result, "answer_original")
+            answer_original_match = is_answer_match(expected_answer, answer_original_text)
+            answer_tool_aug_text = extract_answer_text(result)
+            answer_tool_aug_match = is_answer_match(expected_answer, answer_tool_aug_text)
             answer_evaluated += 1
-            if answer_match:
+            if answer_tool_aug_match:
                 answer_matched += 1
-            (case_out_dir / "answer.txt").write_text(answer_text + "\n", encoding="utf-8")
+            answer_original_evaluated += 1
+            if answer_original_match:
+                answer_original_matched += 1
+            answer_initial_evaluated += 1
+            if answer_initial_match:
+                answer_initial_matched += 1
+            answer_lines = [
+                f"Question: {qa_question}",
+                f"Expected: {expected_answer}",
+                f"Original Image Answer: {answer_original_text}",
+                f"Original Image Match: {answer_original_match}",
+                f"Initial Answer: {answer_initial_text}",
+                f"Initial Match: {answer_initial_match}",
+                f"Tool Augmented Answer: {answer_tool_aug_text}",
+                f"Tool Augmented Match: {answer_tool_aug_match}",
+                "",
+                "=== Prompt: answer_original ===",
+                str(((result.get("answer_original") or {}).get("prompt")) if isinstance(result.get("answer_original"), dict) else ""),
+                "",
+                "=== Prompt: answer_initial ===",
+                str(((result.get("answer_initial") or {}).get("prompt")) if isinstance(result.get("answer_initial"), dict) else ""),
+                "",
+                "=== Prompt: answer_tool_augmented ===",
+                str(((result.get("answer_tool_augmented") or {}).get("prompt")) if isinstance(result.get("answer_tool_augmented"), dict) else ""),
+                "",
+                "=== LLM Raw: answer_original ===",
+                str(((result.get("answer_original") or {}).get("llm_raw")) if isinstance(result.get("answer_original"), dict) else ""),
+                "",
+                "=== LLM Raw: answer_initial ===",
+                str(((result.get("answer_initial") or {}).get("llm_raw")) if isinstance(result.get("answer_initial"), dict) else ""),
+                "",
+                "=== LLM Raw: answer_tool_augmented ===",
+                str(((result.get("answer_tool_augmented") or {}).get("llm_raw")) if isinstance(result.get("answer_tool_augmented"), dict) else ""),
+                "",
+                "=== LLM Raw: answer(final) ===",
+                str(((result.get("answer") or {}).get("llm_raw")) if isinstance(result.get("answer"), dict) else ""),
+                "",
+                "=== LLM Raw: tool_planner ===",
+                str(
+                    (
+                        ((result.get("tool_phase") or {}).get("planner") or {}).get("llm_raw")
+                        if isinstance(result.get("tool_phase"), dict)
+                        else ""
+                    )
+                ),
+            ]
+            (case_out_dir / "answer.txt").write_text("\n".join(answer_lines) + "\n", encoding="utf-8")
             (case_out_dir / "result.json").write_text(
                 json.dumps(result, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -327,8 +351,20 @@ def main() -> None:
                 "case": case_id,
                 "ok": not bool(err),
                 "question": qa_question,
-                "update_question": update_question,
+                "update_question": split_update_question,
                 "expected_answer": expected_answer,
+                "answer_original": (extract_answer_text_by_key(result, "answer_original") if not err else ""),
+                "answer_original_match": (
+                    is_answer_match(expected_answer, extract_answer_text_by_key(result, "answer_original"))
+                    if not err
+                    else False
+                ),
+                "answer_initial": (extract_answer_text_by_key(result, "answer_initial") if not err else ""),
+                "answer_initial_match": (
+                    is_answer_match(expected_answer, extract_answer_text_by_key(result, "answer_initial"))
+                    if not err
+                    else False
+                ),
                 "answer": extract_answer_text(result) if not err else "",
                 "answer_match": (is_answer_match(expected_answer, extract_answer_text(result)) if not err else False),
                 "record_dir": str(case_out_dir),
@@ -344,9 +380,22 @@ def main() -> None:
         "total": total,
         "success": success,
         "failed": failed,
+        "answer_original_evaluated": answer_original_evaluated,
+        "answer_original_matched": answer_original_matched,
+        "answer_original_accuracy": (
+            answer_original_matched / answer_original_evaluated if answer_original_evaluated else 0.0
+        ),
+        "answer_initial_evaluated": answer_initial_evaluated,
+        "answer_initial_matched": answer_initial_matched,
+        "answer_initial_accuracy": (
+            answer_initial_matched / answer_initial_evaluated if answer_initial_evaluated else 0.0
+        ),
         "answer_evaluated": answer_evaluated,
         "answer_matched": answer_matched,
         "answer_accuracy": (answer_matched / answer_evaluated if answer_evaluated else 0.0),
+        "answer_tool_aug_evaluated": answer_evaluated,
+        "answer_tool_aug_matched": answer_matched,
+        "answer_tool_aug_accuracy": (answer_matched / answer_evaluated if answer_evaluated else 0.0),
         "items": summary,
     }
     (run_dir / "summary.json").write_text(
