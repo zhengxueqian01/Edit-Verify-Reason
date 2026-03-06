@@ -144,10 +144,20 @@ class AppHandler(BaseHTTPRequestHandler):
         output_image_url = None
         if isinstance(output_image_path, str) and output_image_path:
             output_image_url = "/files/" + output_image_path.lstrip("/")
+            
         answer = result.get("answer", {}) if isinstance(result, dict) else {}
         qa_answer = ""
+        model_name = ""
         if isinstance(answer, dict):
             qa_answer = str(answer.get("answer") or "").strip()
+            # Try to get model_name if it was stashed by main.py, else retrieve from config
+            model_name = answer.get("model_name", "")
+            if not model_name:
+                try:
+                    from chart_agent.config import get_task_model_config
+                    model_name = get_task_model_config("answer").model
+                except Exception:
+                    pass
 
         render_check = result.get("render_check", {}) if isinstance(result, dict) else {}
         business_ok = bool((render_check or {}).get("ok"))
@@ -171,6 +181,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "issues": issues,
             "answer_issues": (answer.get("issues", []) if isinstance(answer, dict) else []),
             "qa_answer": qa_answer,
+            "model_name": model_name,
             "output_image_path": output_image_path,
             "output_image_url": output_image_url,
             "result": result,

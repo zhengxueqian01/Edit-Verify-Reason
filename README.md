@@ -78,6 +78,28 @@ python -m src.run_dataset_via_main \
 
 Records are written under `output/dataset_records/<model>_<task>_<timestamp>/`.
 
+## Validate SVG Match
+
+Run SVG-vs-ground-truth validation separately:
+
+```bash
+python -m src.validate_svg_matches \
+  --pred-root output/dataset_records/dataset_task2-line_20260303_201506 \
+  --dataset-dir dataset/task2-line
+```
+
+Notes:
+
+- `--pred-root` and `--dataset-dir` must be passed explicitly.
+- Default output path is `output/svg_match/<pred-root>.json`.
+- To validate a single pair:
+
+```bash
+python -m src.validate_svg_matches \
+  --pred-svg output/example.svg \
+  --gt-svg dataset/task2-line/000/000_del.svg
+```
+
 ## Run Web UI
 
 ```bash
@@ -95,3 +117,11 @@ Then open `http://127.0.0.1:8008`.
   - `render_check`
   - `attempt_logs`
   - `answer`, `answer_initial`, `answer_tool_augmented`
+
+## TODO
+
+- Optimize the current model autonomous tool-calling workflow.
+- Validate the match quality between generated SVGs and ground truth.
+- Optimize the current dataset.
+- Evaluate dataset performance across four models.
+- Optimize the validation script.

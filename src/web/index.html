@@ -1,184 +1,742 @@
 <!doctype html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ChartAgent Web Runner</title>
+  <title>ChartAgent: VA System Interface</title>
   <style>
     :root {
-      --bg: #f4f7fb;
-      --card: #ffffff;
-      --text: #1f2a37;
-      --muted: #6b7280;
-      --primary: #0f766e;
-      --primary-2: #115e59;
-      --border: #dbe3ef;
+      --bg: #e6e9ef;
+      --panel-bg: #ffffff;
+      --text: #333333;
+      --text-muted: #737b8b;
+      --border: #d0d5df;
+      --primary: #5289db;
+      --primary-hover: #3d71bd;
+      --accent-green: #48a65f;
+      --accent-yellow: #f4cf51;
+      --radius: 8px;
     }
-    * { box-sizing: border-box; }
+
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       margin: 0;
-      font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       color: var(--text);
-      background: radial-gradient(circle at 20% -10%, #e6fffb 0%, var(--bg) 42%);
-      min-height: 100vh;
+      background-color: var(--bg);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
     }
-    .wrap {
-      max-width: 960px;
-      margin: 32px auto;
+
+    /* Layout Container */
+    .dashboard {
+      display: flex;
+      height: 100vh;
+      padding: 8px;
+      gap: 8px;
+    }
+
+    /* Global Panel Styling */
+    .panel {
+      background: var(--panel-bg);
+      border-radius: var(--radius);
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+      border: 1px solid var(--border);
+    }
+
+    .panel-header {
+      height: 50px;
+      display: flex;
+      align-items: center;
       padding: 0 16px;
-    }
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 18px;
-      box-shadow: 0 8px 28px rgba(15, 23, 42, 0.06);
-      margin-bottom: 16px;
-    }
-    h1 {
-      margin: 0 0 8px;
-      font-size: 24px;
-      letter-spacing: .2px;
-    }
-    p.desc {
-      margin: 0;
-      color: var(--muted);
-      font-size: 14px;
-    }
-    label {
-      display: block;
-      margin: 12px 0 6px;
+      border-bottom: 1px solid var(--border);
       font-weight: 600;
-      font-size: 14px;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #555;
     }
-    input[type="file"], textarea, input[type="number"] {
+
+    .panel-header .icon {
+      margin-right: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .panel-header-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      text-transform: none;
+      color: var(--text-muted);
+      font-weight: normal;
+    }
+
+    /* Specific Panels */
+    .panel-left {
+      width: 320px;
+      flex-shrink: 0;
+    }
+
+    .panel-center {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .panel-right {
+      width: 300px;
+      flex-shrink: 0;
+    }
+
+    /* Left Panel: Upload Area */
+    .chat-upload-area {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      background: #fbfbfc;
+    }
+
+    .chat-upload-area label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 600;
+      color: #444;
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    .chat-upload-area input[type="file"] {
       width: 100%;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 10px 12px;
-      font-size: 14px;
-      background: #fff;
-    }
-    textarea { min-height: 90px; resize: vertical; }
-    .row {
-      display: grid;
-      grid-template-columns: 1fr 220px;
-      gap: 12px;
-    }
-    button {
-      margin-top: 14px;
-      border: 0;
-      border-radius: 10px;
-      background: linear-gradient(135deg, var(--primary), #0d9488);
-      color: #fff;
-      padding: 10px 14px;
-      font-size: 14px;
-      font-weight: 700;
+      border: 1px dashed var(--primary);
+      padding: 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--text);
+      background: #f0f4ff;
       cursor: pointer;
     }
-    button:disabled { opacity: .6; cursor: not-allowed; }
-    pre {
-      white-space: pre-wrap;
-      word-break: break-word;
-      background: #0b1020;
-      color: #c8d2ff;
-      padding: 12px;
-      border-radius: 10px;
+
+    .chat-upload-area input[type="file"]::file-selector-button {
+      border: none;
+      background: var(--primary);
+      color: white;
+      padding: 6px 12px;
+      border-radius: 4px;
+      margin-right: 12px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+
+    .chat-upload-area input[type="file"]::file-selector-button:hover {
+      background: var(--primary-hover);
+    }
+
+    /* Left Panel: Chat Interface */
+    .chat-history {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      background: #fdfdfd;
+    }
+
+    .chat-message {
+      margin-bottom: 24px;
+      position: relative;
+    }
+
+    .chat-time {
       font-size: 12px;
-      max-height: 360px;
-      overflow: auto;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
-    .result-img {
-      max-width: 100%;
-      border: 1px solid var(--border);
-      border-radius: 10px;
+
+    .chat-time svg {
+      width: 14px;
+      height: 14px;
+      color: var(--primary);
+    }
+
+    .chat-bubble {
+      background: var(--panel-bg);
+      border-left: 3px solid var(--primary);
+      padding: 12px 14px;
+      border-radius: 0 6px 6px 0;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #444;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+      border: 1px solid #f0f0f0;
+      border-left: 3px solid var(--primary);
+    }
+
+    .chat-bubble h4 {
+      margin: 0 0 6px;
+      font-size: 13px;
+      color: #222;
+    }
+
+    .chat-bubble p {
+      margin: 0 0 8px;
+    }
+
+    .chat-bubble p:last-child {
+      margin-bottom: 0;
+    }
+
+    .chat-bubble .issues {
+      color: #e53e3e;
+      font-size: 12px;
+      background: #fff5f5;
+      padding: 4px 8px;
+      border-radius: 4px;
+      margin-top: 8px;
+    }
+
+    .chat-bubble .raw {
+      color: var(--text-muted);
+      font-size: 11px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      background: #f8f9fb;
+      padding: 8px;
+      border-radius: 4px;
+      max-height: 100px;
+      overflow-y: auto;
+      margin-top: 8px;
+    }
+
+    /* Left Panel Footer: Input Form */
+    .chat-input-area {
+      padding: 12px;
+      border-top: 1px solid var(--border);
+      background: #fbfbfc;
+    }
+
+    .chat-input-wrapper {
+      position: relative;
+      display: flex;
       background: #fff;
+      border: 1px solid #dcdfe6;
+      border-radius: 6px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02) inset;
     }
-    .muted { color: var(--muted); font-size: 13px; }
-    @media (max-width: 760px) { .row { grid-template-columns: 1fr; } }
+
+    .chat-input-wrapper textarea {
+      flex: 1;
+      height: 60px;
+      border: none;
+      background: transparent;
+      resize: none;
+      padding: 12px;
+      font-size: 13px;
+      color: var(--text);
+      outline: none;
+      font-family: inherit;
+    }
+
+    .chat-input-wrapper button {
+      background: transparent;
+      border: none;
+      color: var(--primary);
+      padding: 0 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      transition: color 0.2s;
+    }
+
+    .chat-input-wrapper button:hover {
+      color: var(--primary-hover);
+    }
+
+    .chat-input-wrapper button:disabled {
+      color: var(--text-muted);
+      cursor: not-allowed;
+    }
+
+    /* Middle Panel: Visuals */
+    .visualization-area {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      background: #fcfcfd;
+    }
+
+    .img-card {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 400px;
+      position: relative;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
+      overflow: hidden;
+    }
+
+    .img-card-header {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 10;
+    }
+
+    .badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .badge.input {
+      background: #e0e7ff;
+      color: #4338ca;
+    }
+
+    .badge.output {
+      background: #dcfce3;
+      color: #166534;
+    }
+
+    .img-card img {
+      width: 100%;
+      height: auto;
+      max-height: 70vh;
+      object-fit: contain;
+      display: none;
+      transition: opacity 0.3s;
+      border-radius: 4px;
+    }
+
+    .img-card img[src] {
+      display: block;
+    }
+
+    .empty-state {
+      color: var(--text-muted);
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Right Panel: Notes and Form Controls */
+    .notes-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      background: #fdfdfd;
+      font-size: 13px;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+      background: #fff;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+    }
+
+    .form-group label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 600;
+      color: #444;
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    .form-group input[type="number"] {
+      width: 100%;
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-size: 13px;
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .form-group input:focus {
+      border-color: var(--primary);
+    }
+
+    .status-area {
+      padding: 12px;
+      background: #f8f9fb;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      word-break: break-all;
+    }
+
+    .status-area .indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #dcdfe6;
+    }
+
+    .status-area.active .indicator {
+      background: var(--primary);
+      box-shadow: 0 0 0 2px rgba(82, 137, 219, 0.2);
+    }
+
+    .status-area.success .indicator {
+      background: var(--accent-green);
+      box-shadow: 0 0 0 2px rgba(72, 166, 95, 0.2);
+    }
+
+    .status-area.error .indicator {
+      background: #e53e3e;
+      box-shadow: 0 0 0 2px rgba(229, 62, 62, 0.2);
+    }
+
+    /* Toggles in header */
+    .toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+
+    .toggle span {
+      font-weight: 600;
+    }
+
+    .switch {
+      width: 28px;
+      height: 16px;
+      background: var(--primary);
+      border-radius: 8px;
+      position: relative;
+    }
+
+    .switch::after {
+      content: '';
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      background: #fff;
+      border-radius: 50%;
+      top: 2px;
+      right: 2px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    }
   </style>
 </head>
+
 <body>
-  <div class="wrap">
-    <div class="card">
-      <h1>ChartAgent 操作面板</h1>
-      <p class="desc">上传 SVG，输入一段“操作 + 问题”的文本，后端会调用 <code>run_main()</code> 执行并返回结果。</p>
-    </div>
 
-    <div class="card">
-      <form id="runForm">
-        <label>上传 SVG 文件</label>
-        <input id="svgFile" name="svg_file" type="file" accept=".svg" required />
+  <form id="mainForm" style="display:contents;">
+    <div class="dashboard">
 
-        <label>操作与问题（question）</label>
-        <textarea id="question" name="question" placeholder="例如：删除类别 \"Aegis Corp\"，新增系列 \"Vanguard Dynamics\" : [1,2,3,...]。修改后整体最大值在哪一年？" required></textarea>
-
-        <div class="row">
-          <div>
-            <label>max_render_retries</label>
-            <input id="maxRetries" name="max_render_retries" type="number" min="0" value="2" />
+      <!-- Left Panel: Chat Interface -->
+      <div class="panel panel-left">
+        <div class="panel-header">
+          <span class="icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+          </span>
+          CHAT & SETTINGS
+          <div class="panel-header-right" id="statusBox" style="display: flex; align-items: center; gap: 8px;">
+            <div class="indicator"
+              style="width: 8px; height: 8px; border-radius: 50%; background: #dcdfe6; transition: background 0.3s, box-shadow 0.3s;">
+            </div>
+            <span id="statusText">System Ready</span>
           </div>
         </div>
 
-        <button id="submitBtn" type="submit">提交并执行</button>
-      </form>
-      <p class="muted" id="status"></p>
+        <!-- Settings & Upload -->
+        <div class="chat-upload-area">
+          <label>Source Vector (SVG)</label>
+          <input id="svgFile" name="svg_file" type="file" accept=".svg" required />
+
+          <label style="margin-top: 16px;">Max Render Retries ($N$)</label>
+          <input id="maxRetries" name="max_render_retries" type="number" min="0" value="2"
+            style="width: 100%; border: 1px solid var(--border); padding: 8px 10px; border-radius: 4px; font-size: 13px; color: var(--text); outline: none; transition: border-color 0.2s;" />
+        </div>
+
+        <div class="chat-history" id="qaAnswer">
+          <div class="empty-state" style="margin-top: 40px;">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round" style="color: #bbb; margin-bottom: 8px;">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+            No instructions executed yet.
+          </div>
+        </div>
+
+        <div class="chat-input-area">
+          <div class="chat-input-wrapper">
+            <textarea id="question" name="question" placeholder="Type an instruction here..." required></textarea>
+            <button id="submitBtn" type="submit">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Middle Panel: Visualization -->
+      <div class="panel panel-center">
+        <div class="panel-header">
+          <span class="icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" style="color: #6366f1;">
+              <line x1="18" y1="20" x2="18" y2="10"></line>
+              <line x1="12" y1="20" x2="12" y2="4"></line>
+              <line x1="6" y1="20" x2="6" y2="14"></line>
+            </svg>
+          </span>
+          ORIGINAL VA SYSTEM
+        </div>
+
+        <div class="visualization-area">
+          <!-- Result Output -->
+          <div class="img-card">
+            <div class="img-card-header"><span class="badge output">Output</span> Modified System State</div>
+            <img id="resultImage" alt="Modified Output Result" />
+            <div class="empty-state" id="resultPlaceholderText">
+              Waiting for execution command
+            </div>
+          </div>
+
+          <!-- Original Input -->
+          <div class="img-card">
+            <div class="img-card-header"><span class="badge input">Input</span> Original Data Source</div>
+            <img id="originalImage" alt="Original Input Data" />
+            <div class="empty-state" id="origPlaceholderText">
+              Awaiting Source File (.svg)
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
 
-    <div class="card">
-      <h3>修改后图片</h3>
-      <img id="resultImage" class="result-img" alt="结果图" />
-      <p class="muted" id="imagePath"></p>
     </div>
-
-    <div class="card">
-      <h3>QA 答案</h3>
-      <pre id="qaAnswer">尚未执行</pre>
-    </div>
-
-  </div>
+  </form>
 
   <script>
-    const form = document.getElementById('runForm');
+    const form = document.getElementById('mainForm');
+    const svgFileInput = document.getElementById('svgFile');
     const btn = document.getElementById('submitBtn');
-    const statusEl = document.getElementById('status');
     const qaAnswer = document.getElementById('qaAnswer');
+
+    const statusBox = document.getElementById('statusBox');
+    const statusText = document.getElementById('statusText');
+
+    const originalImage = document.getElementById('originalImage');
+    const origPlaceholderText = document.getElementById('origPlaceholderText');
+
     const resultImage = document.getElementById('resultImage');
-    const imagePath = document.getElementById('imagePath');
+    const resultPlaceholderText = document.getElementById('resultPlaceholderText');
+
+    // Preview Original SVG
+    svgFileInput.addEventListener('change', function (e) {
+      const file = e.target.files[0];
+      if (file && file.type === 'image/svg+xml') {
+        const reader = new FileReader();
+        reader.onload = function (evt) {
+          originalImage.src = evt.target.result;
+          origPlaceholderText.style.display = 'none';
+          setStatus('Ready to execute.', '');
+        };
+        reader.readAsDataURL(file);
+      } else {
+        originalImage.removeAttribute('src');
+        origPlaceholderText.style.display = 'flex';
+        origPlaceholderText.innerHTML = file ? "Invalid format" : "Awaiting Source File (.svg)";
+      }
+    });
+
+    function setStatus(text, stateClass) {
+      statusText.textContent = text;
+      const indicator = statusBox.querySelector('.indicator');
+      if (stateClass === 'active') {
+        indicator.style.background = 'var(--primary)';
+        indicator.style.boxShadow = '0 0 0 2px rgba(82, 137, 219, 0.2)';
+      } else if (stateClass === 'success') {
+        indicator.style.background = 'var(--accent-green)';
+        indicator.style.boxShadow = '0 0 0 2px rgba(72, 166, 95, 0.2)';
+      } else if (stateClass === 'error') {
+        indicator.style.background = '#e53e3e';
+        indicator.style.boxShadow = '0 0 0 2px rgba(229, 62, 62, 0.2)';
+      } else {
+        indicator.style.background = '#dcdfe6';
+        indicator.style.boxShadow = 'none';
+      }
+    }
+
+    function _text(v) {
+      if (v === null || v === undefined) return '';
+      return String(v).trim();
+    }
+
+    function _answerText(answerObj) {
+      if (answerObj && typeof answerObj === 'object') return _text(answerObj.answer);
+      return _text(answerObj);
+    }
+
+    // Convert answers into Chat Bubbles
+    function renderAllAnswersAsChat(data) {
+      const result = (data && data.result && typeof data.result === 'object') ? data.result : {};
+      const sections = [
+        ['Final Answer', result.answer, '#primary'],
+        ['Original Image Answer', result.answer_original, '#muted'],
+        ['Initial Answer', result.answer_initial, '#muted'],
+        ['Tool Augmented Answer', result.answer_tool_augmented, '#muted'],
+      ];
+
+      let html = '';
+      const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+
+      let hasBlocks = false;
+      const modelNameBadge = data.model_name ? ` <span style="font-size:10px; background:#e2e8f0; color:#475569; padding:2px 6px; border-radius:10px; margin-left:8px;">🤖 ${data.model_name}</span>` : '';
+
+      for (const [title, value, type] of sections) {
+        const answerText = _answerText(value);
+        const llmRaw = (value && typeof value === 'object') ? _text(value.llm_raw) : '';
+        const issues = (value && typeof value === 'object' && Array.isArray(value.issues))
+          ? value.issues.join(', ')
+          : '';
+
+        if (!answerText && !llmRaw && !issues) continue;
+        hasBlocks = true;
+
+        let bubbleHTML = `
+      <div class="chat-message">
+        <div class="chat-time">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+          ${timeStr} - ${title}${title === 'Final Answer' ? modelNameBadge : ''}
+        </div>
+        <div class="chat-bubble" ${title === 'Final Answer' ? 'style="border-left-color:var(--accent-green);"' : ''}>
+          <h4>${title}</h4>
+          <p>${answerText || '(No answer text provided)'}</p>
+      `;
+        if (issues) bubbleHTML += `<div class="issues">Issues: ${issues}</div>`;
+        if (llmRaw) bubbleHTML += `<div class="raw">${llmRaw}</div>`;
+
+        bubbleHTML += `
+        </div>
+      </div>`;
+        html += bubbleHTML;
+      }
+
+      if (!hasBlocks) {
+        return `
+      <div class="chat-message">
+        <div class="chat-time">${timeStr}</div>
+        <div class="chat-bubble" style="border-left-color:#e53e3e;">
+          <h4>Execution Failed</h4>
+          <p>${_text(data && data.qa_answer) || 'No response returned from the workflow.'}</p>
+        </div>
+      </div>`;
+      }
+
+      return html;
+    }
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       btn.disabled = true;
-      statusEl.textContent = '执行中...';
-      qaAnswer.textContent = '执行中...';
+      const questionInput = document.getElementById('question');
+
+      // Add User Query to Chat
+      const userQ = questionInput.value;
+      const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+      const userMsg = `
+    <div class="chat-message" style="align-self: flex-end;">
+      <div class="chat-time" style="justify-content: flex-end;">User Query - ${timeStr}</div>
+      <div class="chat-bubble" style="background:#f0f4ff; border-left:none; border-right: 3px solid var(--primary); border-radius: 6px 0 6px 6px;">
+        <p>${userQ.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
+      </div>
+    </div>`;
+
+      if (qaAnswer.querySelector('.empty-state')) {
+        qaAnswer.innerHTML = '';
+      }
+      qaAnswer.innerHTML += userMsg;
+      qaAnswer.scrollTop = qaAnswer.scrollHeight;
+
+      setStatus('Processing instruction...', 'active');
+
       resultImage.removeAttribute('src');
-      imagePath.textContent = '';
+      resultPlaceholderText.style.display = 'flex';
+      resultPlaceholderText.textContent = "Executing transformation...";
 
       try {
         const fd = new FormData(form);
-        const resp = await fetch('/api/run', { method: 'POST', body: fd });
+        fd.set('question', userQ);
+        const respPromise = fetch('/api/run', { method: 'POST', body: fd });
+        questionInput.value = '';
+        const resp = await respPromise;
         const data = await resp.json();
-        qaAnswer.textContent = data.qa_answer || '未返回答案';
+
+        const newMessages = renderAllAnswersAsChat(data);
+        qaAnswer.innerHTML += newMessages;
+        qaAnswer.scrollTop = qaAnswer.scrollHeight;
 
         if (data.output_image_url) {
           resultImage.src = data.output_image_url + '?t=' + Date.now();
-          imagePath.textContent = data.output_image_path || '';
-        }
-        if (!resp.ok) {
-          statusEl.textContent = '执行失败';
+          resultPlaceholderText.style.display = 'none';
+          setStatus('Analysis complete', 'success');
+        } else if (!resp.ok) {
+          setStatus('Execution Failure', 'error');
           if (data.error) {
-            qaAnswer.textContent = `失败：${data.error}`;
+            qaAnswer.innerHTML += `<div class="chat-message"><div class="chat-bubble" style="border-left-color:#e53e3e;"><h4>Error</h4><p>${data.error}</p></div></div>`;
           }
         } else {
-          statusEl.textContent = '执行完成';
+          setStatus('Analysis complete', 'success');
         }
       } catch (err) {
-        qaAnswer.textContent = `请求失败：${String(err)}`;
-        statusEl.textContent = '请求失败';
+        qaAnswer.innerHTML += `<div class="chat-message"><div class="chat-bubble" style="border-left-color:#e53e3e;"><h4>Network Error</h4><p>${String(err)}</p></div></div>`;
+        setStatus('Network exception occurred', 'error');
       } finally {
         btn.disabled = false;
+        qaAnswer.scrollTop = qaAnswer.scrollHeight;
       }
     });
   </script>
+
 </body>
+
 </html>

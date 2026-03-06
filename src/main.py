@@ -274,7 +274,7 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
     tool_phase = run_visual_tool_phase(
         question=qa_question,
         chart_type=chart_type,
-        data_summary={},
+        data_summary=answer_data_summary,
         image_path=last_output_image,
         svg_path=final_step_svg_path or None,
         llm=tool_planner_llm,

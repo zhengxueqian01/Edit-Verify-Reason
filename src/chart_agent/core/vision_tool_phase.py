@@ -142,10 +142,15 @@ def _plan_tool_calls(
         "- Use SVG coordinates only.\n"
         f"- Canvas size is width={canvas_width:.2f}, height={canvas_height:.2f}.\n"
         "- Keep overlays minimal and non-occluding.\n"
+        "- Prefer 1-3 calls; use 4+ only if the question truly requires multiple marks.\n"
+        "- Never add duplicate or near-duplicate marks.\n"
+        "- Avoid full-chart boxes or long explanatory text.\n"
+        "- Use add_text only for short neutral labels, not for answers.\n"
         "- If no visual enhancement is needed, return empty tool_calls.\n"
         "- Max 6 tool calls.\n"
         f"Question: {question}\n"
         f"Chart type: {chart_type}\n"
+        f"Data summary: {json.dumps(data_summary, ensure_ascii=False)}\n"
         f"Tools: {json.dumps(TOOL_SPECS, ensure_ascii=False)}\n"
     )
 
@@ -160,31 +165,164 @@ def _plan_tool_calls(
     if not payload:
         return {"tool_calls": [], "notes": "planner_non_json", "llm_success": False, "llm_raw": content}
     raw_calls = payload.get("tool_calls", [])
-    calls = _coerce_tool_calls(raw_calls)
+    calls, rejected = _coerce_tool_calls(raw_calls, canvas_width=canvas_width, canvas_height=canvas_height)
     return {
         "qa_understanding": str(payload.get("qa_understanding") or ""),
         "tool_calls": calls,
+        "rejected_tool_calls": rejected,
+        "tool_call_count": len(calls),
         "notes": str(payload.get("notes") or ""),
         "llm_success": True,
         "llm_raw": content,
     }
 
 
-def _coerce_tool_calls(raw: Any) -> list[dict[str, Any]]:
+def _coerce_tool_calls(
+    raw: Any,
+    *,
+    canvas_width: float,
+    canvas_height: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if not isinstance(raw, list):
-        return []
+        return [], []
     out: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for item in raw:
         if not isinstance(item, dict):
             continue
         tool = str(item.get("tool") or "").strip()
         args = item.get("args", {})
         if tool not in {"add_point", "draw_line", "highlight_rect", "add_text"}:
+            rejected.append({"tool": tool, "args": args, "reason": "unknown_tool"})
             continue
         if not isinstance(args, dict):
             args = {}
-        out.append({"tool": tool, "args": args})
-    return out
+        normalized, reason = _normalize_tool_call(
+            tool,
+            args,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+        )
+        if normalized is None:
+            rejected.append({"tool": tool, "args": args, "reason": reason or "invalid_args"})
+            continue
+        fingerprint = _tool_call_fingerprint(normalized)
+        if fingerprint in seen:
+            rejected.append({"tool": tool, "args": args, "reason": "duplicate"})
+            continue
+        seen.add(fingerprint)
+        out.append(normalized)
+    return out, rejected
+
+
+def _normalize_tool_call(
+    tool: str,
+    args: dict[str, Any],
+    *,
+    canvas_width: float,
+    canvas_height: float,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if tool == "add_point":
+        x = _clamp(_as_float(args.get("x"), 0.0), 0.0, canvas_width)
+        y = _clamp(_as_float(args.get("y"), 0.0), 0.0, canvas_height)
+        radius = _clamp(_as_float(args.get("radius"), 3.0), 0.8, 8.0)
+        return (
+            {
+                "tool": tool,
+                "args": {
+                    "x": round(x, 3),
+                    "y": round(y, 3),
+                    "radius": round(radius, 3),
+                    "color": _safe_color(args.get("color"), "#ff2d55"),
+                    "label": _short_text(str(args.get("label") or "").strip(), 28),
+                },
+            },
+            None,
+        )
+    if tool == "draw_line":
+        x1 = _clamp(_as_float(args.get("x1"), 0.0), 0.0, canvas_width)
+        y1 = _clamp(_as_float(args.get("y1"), 0.0), 0.0, canvas_height)
+        x2 = _clamp(_as_float(args.get("x2"), 0.0), 0.0, canvas_width)
+        y2 = _clamp(_as_float(args.get("y2"), 0.0), 0.0, canvas_height)
+        length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+        if length < 2.0:
+            return None, "line_too_short"
+        return (
+            {
+                "tool": tool,
+                "args": {
+                    "x1": round(x1, 3),
+                    "y1": round(y1, 3),
+                    "x2": round(x2, 3),
+                    "y2": round(y2, 3),
+                    "width": round(_clamp(_as_float(args.get("width"), 1.6), 0.6, 4.0), 3),
+                    "color": _safe_color(args.get("color"), "#ff9500"),
+                    "label": _short_text(str(args.get("label") or "").strip(), 28),
+                },
+            },
+            None,
+        )
+    if tool == "highlight_rect":
+        x1 = _clamp(_as_float(args.get("x1"), 0.0), 0.0, canvas_width)
+        y1 = _clamp(_as_float(args.get("y1"), 0.0), 0.0, canvas_height)
+        x2 = _clamp(_as_float(args.get("x2"), 0.0), 0.0, canvas_width)
+        y2 = _clamp(_as_float(args.get("y2"), 0.0), 0.0, canvas_height)
+        left, right = sorted((x1, x2))
+        top, bottom = sorted((y1, y2))
+        width = right - left
+        height = bottom - top
+        if width < 2.0 or height < 2.0:
+            return None, "rect_too_small"
+        area_ratio = (width * height) / max(canvas_width * canvas_height, 1.0)
+        if area_ratio > 0.6:
+            return None, "rect_too_large"
+        return (
+            {
+                "tool": tool,
+                "args": {
+                    "x1": round(left, 3),
+                    "y1": round(top, 3),
+                    "x2": round(right, 3),
+                    "y2": round(bottom, 3),
+                    "width": round(_clamp(_as_float(args.get("width"), 1.2), 0.6, 4.0), 3),
+                    "color": _safe_color(args.get("color"), "#007aff"),
+                    "fill_opacity": round(_clamp(_as_float(args.get("fill_opacity"), 0.08), 0.0, 0.25), 4),
+                    "label": _short_text(str(args.get("label") or "").strip(), 28),
+                },
+            },
+            None,
+        )
+    if tool == "add_text":
+        text = _short_text(str(args.get("text") or "").strip(), 36)
+        if not text:
+            return None, "empty_text"
+        return (
+            {
+                "tool": tool,
+                "args": {
+                    "x": round(_clamp(_as_float(args.get("x"), 0.0), 0.0, canvas_width), 3),
+                    "y": round(_clamp(_as_float(args.get("y"), 0.0), 0.0, canvas_height), 3),
+                    "text": text,
+                    "color": _safe_color(args.get("color"), "#111111"),
+                    "font_size": round(_clamp(_as_float(args.get("font_size"), 10.0), 7.0, 16.0), 3),
+                },
+            },
+            None,
+        )
+    return None, "unknown_tool"
+
+
+def _tool_call_fingerprint(call: dict[str, Any]) -> str:
+    tool = str(call.get("tool") or "")
+    args = call.get("args", {}) if isinstance(call.get("args"), dict) else {}
+    rounded: dict[str, Any] = {}
+    for key, value in sorted(args.items()):
+        if isinstance(value, float):
+            rounded[key] = round(value, 1)
+        else:
+            rounded[key] = value
+    return json.dumps({"tool": tool, "args": rounded}, ensure_ascii=False, sort_keys=True)
 
 
 def _execute_svg_tool_calls(

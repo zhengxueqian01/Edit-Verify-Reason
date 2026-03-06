@@ -78,6 +78,28 @@ python -m src.run_dataset_via_main \
 
 运行记录输出到：`output/dataset_records/<model>_<task>_<timestamp>/`。
 
+## 独立验证 SVG 匹配
+
+单独执行生成 SVG 和 ground truth 的匹配验证：
+
+```bash
+python -m src.validate_svg_matches \
+  --pred-root output/dataset_records/dataset_task2-line_20260303_201506 \
+  --dataset-dir dataset/task2-line
+```
+
+说明：
+
+- `--pred-root` 和 `--dataset-dir` 必须显式传入。
+- 默认输出路径为 `output/svg_match/<pred-root>.json`。
+- 如果只验证单个 SVG 对，可以执行：
+
+```bash
+python -m src.validate_svg_matches \
+  --pred-svg output/example.svg \
+  --gt-svg dataset/task2-line/000/000_del.svg
+```
+
 ## 启动 Web 页面
 
 ```bash
@@ -95,3 +117,11 @@ python -m src.web_app
   - `render_check`
   - `attempt_logs`
   - `answer`、`answer_initial`、`answer_tool_augmented`
+
+## 待办
+
+- 优化现在模型自主调用工具的流程
+- 验证生成的 SVG 图和 ground truth 的匹配度
+- 优化现在的数据集
+- 数据集在 4 个模型上的效果
+- 优化验证脚本

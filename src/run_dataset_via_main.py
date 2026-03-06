@@ -3,11 +3,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+PROJECT_SRC = os.path.abspath(os.path.dirname(__file__))
+if PROJECT_SRC not in sys.path:
+    sys.path.insert(0, PROJECT_SRC)
 
 from main import run_main
 from chart_agent.config import get_task_model_config
