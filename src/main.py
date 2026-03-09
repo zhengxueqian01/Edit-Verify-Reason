@@ -39,6 +39,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 SUPPORTED_SVG_CHART_TYPES = {"scatter", "line", "area"}
+TOOL_AUG_CONFIDENCE_THRESHOLD = 0.7
 
 
 def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
@@ -250,11 +251,13 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
         "data_summary": answer_data_summary,
     }
 
+    final_eval_image = str(inputs.get("answer_image_path") or "").strip() or last_output_image
+
     initial_answer = answer_question(
         qa_question=qa_question,
         chart_type=chart_type,
         data_summary=answer_data_summary,
-        output_image_path=last_output_image,
+        output_image_path=final_eval_image,
         llm=answer_llm,
     )
     output["answer_initial"] = initial_answer
@@ -271,14 +274,31 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
                 final_step_svg_path = p
                 break
 
-    tool_phase = run_visual_tool_phase(
-        question=qa_question,
-        chart_type=chart_type,
-        data_summary=answer_data_summary,
-        image_path=last_output_image,
-        svg_path=final_step_svg_path or None,
-        llm=tool_planner_llm,
-    )
+    initial_confidence_raw = initial_answer.get("confidence", 0.0) if isinstance(initial_answer, dict) else 0.0
+    try:
+        initial_confidence = float(initial_confidence_raw)
+    except (TypeError, ValueError):
+        initial_confidence = 0.0
+
+    if initial_confidence < TOOL_AUG_CONFIDENCE_THRESHOLD:
+        tool_phase = run_visual_tool_phase(
+            question=qa_question,
+            chart_type=chart_type,
+            data_summary=answer_data_summary,
+            image_path=last_output_image,
+            svg_path=final_step_svg_path or None,
+            llm=tool_planner_llm,
+        )
+    else:
+        tool_phase = {
+            "ok": False,
+            "reason": "skipped_high_confidence",
+            "confidence_threshold": TOOL_AUG_CONFIDENCE_THRESHOLD,
+            "initial_confidence": initial_confidence,
+            "tool_calls": [],
+            "augmented_svg_path": None,
+            "augmented_image_path": last_output_image,
+        }
     output["tool_phase"] = tool_phase
 
     augmented_path = str(tool_phase.get("augmented_image_path") or "").strip()

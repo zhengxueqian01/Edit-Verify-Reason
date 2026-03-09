@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -49,14 +50,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "add_text",
-        "description": "Add a small text label at SVG coordinate.",
+        "name": "isolate_color_topology",
+        "description": (
+            "For scatter charts, fade non-target point colors and draw convex hull polygons "
+            "around DBSCAN clusters of the target-color points."
+        ),
         "args": {
-            "x": "number",
-            "y": "number",
-            "text": "string",
-            "color": "string hex color, optional, default #111111",
-            "font_size": "number, optional, default 10",
+            "target_color": "string color name or hex chosen from the legend, such as red, blue, or #ff0000",
         },
     },
 ]
@@ -145,7 +145,6 @@ def _plan_tool_calls(
         "- Prefer 1-3 calls; use 4+ only if the question truly requires multiple marks.\n"
         "- Never add duplicate or near-duplicate marks.\n"
         "- Avoid full-chart boxes or long explanatory text.\n"
-        "- Use add_text only for short neutral labels, not for answers.\n"
         "- If no visual enhancement is needed, return empty tool_calls.\n"
         "- Max 6 tool calls.\n"
         f"Question: {question}\n"
@@ -193,7 +192,7 @@ def _coerce_tool_calls(
             continue
         tool = str(item.get("tool") or "").strip()
         args = item.get("args", {})
-        if tool not in {"add_point", "draw_line", "highlight_rect", "add_text"}:
+        if tool not in {"add_point", "draw_line", "highlight_rect", "isolate_color_topology"}:
             rejected.append({"tool": tool, "args": args, "reason": "unknown_tool"})
             continue
         if not isinstance(args, dict):
@@ -293,19 +292,15 @@ def _normalize_tool_call(
             },
             None,
         )
-    if tool == "add_text":
-        text = _short_text(str(args.get("text") or "").strip(), 36)
-        if not text:
-            return None, "empty_text"
+    if tool == "isolate_color_topology":
+        target_color = _normalize_color_selector(args.get("target_color"))
+        if not target_color:
+            return None, "invalid_target_color"
         return (
             {
                 "tool": tool,
                 "args": {
-                    "x": round(_clamp(_as_float(args.get("x"), 0.0), 0.0, canvas_width), 3),
-                    "y": round(_clamp(_as_float(args.get("y"), 0.0), 0.0, canvas_height), 3),
-                    "text": text,
-                    "color": _safe_color(args.get("color"), "#111111"),
-                    "font_size": round(_clamp(_as_float(args.get("font_size"), 10.0), 7.0, 16.0), 3),
+                    "target_color": target_color,
                 },
             },
             None,
@@ -352,8 +347,8 @@ def _execute_svg_tool_calls(
                 _svg_draw_line(overlay, ns, args, canvas_w, canvas_h)
             elif tool == "highlight_rect":
                 _svg_highlight_rect(overlay, ns, args, canvas_w, canvas_h)
-            elif tool == "add_text":
-                _svg_add_text(overlay, ns, args, canvas_w, canvas_h)
+            elif tool == "isolate_color_topology":
+                _svg_isolate_color_topology(root, overlay, ns, args, canvas_w, canvas_h)
             else:
                 raise ValueError(f"unknown tool: {tool}")
             executed.append({"index": idx + 1, "tool": tool, "args": args})
@@ -463,17 +458,6 @@ def _svg_highlight_rect(overlay: ET.Element, ns: str, args: dict[str, Any], w: f
         _svg_text(overlay, ns, left + 2, top + 11, label, "#111111", 9.5)
 
 
-def _svg_add_text(overlay: ET.Element, ns: str, args: dict[str, Any], w: float, h: float) -> None:
-    x = _clamp(_as_float(args.get("x"), 0.0), 0.0, w)
-    y = _clamp(_as_float(args.get("y"), 0.0), 0.0, h)
-    text = _short_text(str(args.get("text") or "").strip(), 36)
-    if not text:
-        return
-    color = _safe_color(args.get("color"), "#111111")
-    size = _clamp(_as_float(args.get("font_size"), 10.0), 7.0, 16.0)
-    _svg_text(overlay, ns, x, y, text, color, size)
-
-
 def _svg_text(
     overlay: ET.Element,
     ns: str,
@@ -495,6 +479,83 @@ def _svg_text(
         },
     )
     t.text = text
+
+
+def _svg_isolate_color_topology(
+    root: ET.Element,
+    overlay: ET.Element,
+    ns: str,
+    args: dict[str, Any],
+    w: float,
+    h: float,
+) -> None:
+    target_selector = _normalize_color_selector(args.get("target_color"))
+    if not target_selector:
+        raise ValueError("target_color is required")
+
+    points = _extract_colored_scatter_points(root, ns)
+    if not points:
+        raise ValueError("no scatter points found")
+
+    resolved_color = _resolve_target_color(target_selector, [p["fill"] for p in points])
+    if not resolved_color:
+        raise ValueError(f"target color not found in svg: {target_selector}")
+
+    target_points: list[tuple[float, float]] = []
+    for point in points:
+        fill = str(point.get("fill") or "").lower()
+        elem = point.get("element")
+        if not isinstance(elem, ET.Element):
+            continue
+        if fill == resolved_color:
+            target_points.append((float(point["x"]), float(point["y"])))
+            _set_element_opacity(elem, fill_opacity="0.98", stroke_opacity="0.98", opacity="1.0")
+        else:
+            _set_element_opacity(elem, fill_opacity="0.10", stroke_opacity="0.10", opacity="0.22")
+
+    if not target_points:
+        raise ValueError(f"no points found for target color: {target_selector}")
+
+    labels = _dbscan_points(target_points, eps=_auto_cluster_eps(target_points), min_samples=1)
+    clusters = _group_points_by_label(target_points, labels)
+    hull_color = "#ff3b30"
+    for cluster_points in clusters:
+        if len(cluster_points) == 1:
+            x, y = cluster_points[0]
+            _svg_add_point(
+                overlay,
+                ns,
+                {"x": x, "y": y, "radius": 5.0, "color": hull_color, "label": ""},
+                w,
+                h,
+            )
+            continue
+        if len(cluster_points) == 2:
+            (x1, y1), (x2, y2) = cluster_points
+            _svg_draw_line(
+                overlay,
+                ns,
+                {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "width": 2.2, "color": hull_color, "label": ""},
+                w,
+                h,
+            )
+            continue
+        hull = _convex_hull(cluster_points)
+        if len(hull) < 3:
+            continue
+        ET.SubElement(
+            overlay,
+            _nstag(ns, "polygon"),
+            {
+                "points": " ".join(f"{x:.6f},{y:.6f}" for x, y in hull),
+                "fill": hull_color,
+                "fill-opacity": "0.02",
+                "stroke": hull_color,
+                "stroke-opacity": "0.96",
+                "stroke-width": "2.2",
+                "stroke-linejoin": "round",
+            },
+        )
 
 
 def _find_overlay_parent(root: ET.Element, ns: str) -> ET.Element:
@@ -588,6 +649,241 @@ def _safe_color(raw: Any, default: str) -> str:
     if re.match(r"^#[0-9a-fA-F]{3}$", text):
         return text
     return default
+
+
+def _normalize_color_selector(raw: Any) -> str:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return ""
+    if re.match(r"^#[0-9a-f]{6}$", text):
+        return text
+    if re.match(r"^#[0-9a-f]{3}$", text):
+        return text
+    if re.match(r"^[a-z][a-z0-9_-]{1,20}$", text):
+        return text
+    return ""
+
+
+def _extract_colored_scatter_points(root: ET.Element, ns: str) -> list[dict[str, Any]]:
+    axes = root.find(f".//{_nstag(ns, 'g')}[@id='axes_1']")
+    if axes is None:
+        axes = root
+
+    points: list[dict[str, Any]] = []
+    path_collection = axes.find(f".//{_nstag(ns, 'g')}[@id='PathCollection_1']")
+    if path_collection is not None:
+        for use_elem in path_collection.findall(f".//{_nstag(ns, 'use')}"):
+            x_attr = use_elem.get("x")
+            y_attr = use_elem.get("y")
+            fill = _extract_fill_from_element(use_elem)
+            if not x_attr or not y_attr or not fill:
+                continue
+            try:
+                points.append(
+                    {
+                        "element": use_elem,
+                        "x": float(x_attr),
+                        "y": float(y_attr),
+                        "fill": fill,
+                    }
+                )
+            except ValueError:
+                continue
+    for circle in axes.findall(f".//{_nstag(ns, 'circle')}"):
+        fill = _extract_fill_from_element(circle)
+        cx = circle.get("cx")
+        cy = circle.get("cy")
+        if not fill or not cx or not cy:
+            continue
+        try:
+            points.append(
+                {
+                    "element": circle,
+                    "x": float(cx),
+                    "y": float(cy),
+                    "fill": fill,
+                }
+            )
+        except ValueError:
+            continue
+    return points
+
+
+def _extract_fill_from_element(elem: ET.Element) -> str:
+    fill = str(elem.get("fill") or "").strip().lower()
+    if re.match(r"^#[0-9a-f]{6}$", fill):
+        return fill
+    if re.match(r"^#[0-9a-f]{3}$", fill):
+        return fill
+    style = str(elem.get("style") or "")
+    match = re.search(r"fill:\s*(#[0-9a-fA-F]{3,6})", style)
+    if match:
+        return match.group(1).lower()
+    return ""
+
+
+def _set_element_opacity(
+    elem: ET.Element,
+    *,
+    fill_opacity: str,
+    stroke_opacity: str,
+    opacity: str,
+) -> None:
+    style = str(elem.get("style") or "")
+    style = _replace_style_attr(style, "fill-opacity", fill_opacity)
+    style = _replace_style_attr(style, "stroke-opacity", stroke_opacity)
+    style = _replace_style_attr(style, "opacity", opacity)
+    if style:
+        elem.set("style", style)
+    else:
+        elem.set("fill-opacity", fill_opacity)
+        elem.set("stroke-opacity", stroke_opacity)
+        elem.set("opacity", opacity)
+
+
+def _replace_style_attr(style: str, name: str, value: str) -> str:
+    pattern = rf"(^|;)\s*{re.escape(name)}\s*:\s*[^;]+"
+    replacement = rf"\1{name}: {value}"
+    if re.search(pattern, style):
+        return re.sub(pattern, replacement, style)
+    if style and not style.rstrip().endswith(";"):
+        style = style.rstrip() + "; "
+    return f"{style}{name}: {value}".strip()
+
+
+def _resolve_target_color(target_selector: str, fills: list[str]) -> str | None:
+    normalized_fills = sorted({str(fill or "").lower() for fill in fills if fill})
+    if target_selector in normalized_fills:
+        return target_selector
+    selector_aliases = _color_aliases(target_selector)
+    for fill in normalized_fills:
+        if selector_aliases & _color_aliases(fill):
+            return fill
+    return None
+
+
+def _color_aliases(color: str) -> set[str]:
+    token = str(color or "").strip().lower()
+    aliases = {token} if token else set()
+    canonical = {
+        "red": {"#ff0000", "#d62728", "#e41a1c", "#ff3b30"},
+        "blue": {"#0000ff", "#1f77b4", "#4c78a8", "#007aff"},
+        "green": {"#008000", "#2ca02c", "#4daf4a", "#34c759"},
+        "orange": {"#ff7f0e", "#ff9500", "#ffa500"},
+        "purple": {"#9467bd", "#800080", "#af52de"},
+        "pink": {"#ff1493", "#e377c2"},
+        "yellow": {"#bcbd22", "#ffff00", "#ffd60a"},
+        "cyan": {"#17becf", "#00ffff"},
+        "gray": {"#7f7f7f", "#808080"},
+        "black": {"#000000"},
+    }
+    for name, values in canonical.items():
+        if token == name or token in values:
+            aliases.add(name)
+            aliases.update(values)
+    return aliases
+
+
+def _dbscan_points(points: list[tuple[float, float]], eps: float, min_samples: int) -> list[int]:
+    labels = [-1 for _ in points]
+    visited = [False for _ in points]
+    cluster_id = 0
+    for idx in range(len(points)):
+        if visited[idx]:
+            continue
+        visited[idx] = True
+        neighbors = _region_query(points, idx, eps)
+        if len(neighbors) < min_samples:
+            labels[idx] = -1
+            continue
+        _expand_cluster(points, labels, visited, idx, neighbors, cluster_id, eps, min_samples)
+        cluster_id += 1
+    return labels
+
+
+def _expand_cluster(
+    points: list[tuple[float, float]],
+    labels: list[int],
+    visited: list[bool],
+    point_idx: int,
+    neighbors: list[int],
+    cluster_id: int,
+    eps: float,
+    min_samples: int,
+) -> None:
+    labels[point_idx] = cluster_id
+    i = 0
+    while i < len(neighbors):
+        neighbor_idx = neighbors[i]
+        if not visited[neighbor_idx]:
+            visited[neighbor_idx] = True
+            neighbor_neighbors = _region_query(points, neighbor_idx, eps)
+            if len(neighbor_neighbors) >= min_samples:
+                for candidate in neighbor_neighbors:
+                    if candidate not in neighbors:
+                        neighbors.append(candidate)
+        if labels[neighbor_idx] == -1:
+            labels[neighbor_idx] = cluster_id
+        i += 1
+
+
+def _region_query(points: list[tuple[float, float]], idx: int, eps: float) -> list[int]:
+    px, py = points[idx]
+    neighbors: list[int] = []
+    for jdx, (x, y) in enumerate(points):
+        if math.hypot(px - x, py - y) <= eps:
+            neighbors.append(jdx)
+    return neighbors
+
+
+def _auto_cluster_eps(points: list[tuple[float, float]]) -> float:
+    if len(points) <= 1:
+        return 8.0
+    nearest: list[float] = []
+    for idx, (x1, y1) in enumerate(points):
+        best = float("inf")
+        for jdx, (x2, y2) in enumerate(points):
+            if idx == jdx:
+                continue
+            best = min(best, math.hypot(x1 - x2, y1 - y2))
+        if best != float("inf"):
+            nearest.append(best)
+    if not nearest:
+        return 8.0
+    nearest.sort()
+    median = nearest[len(nearest) // 2]
+    return _clamp(median * 1.8, 6.0, 28.0)
+
+
+def _group_points_by_label(points: list[tuple[float, float]], labels: list[int]) -> list[list[tuple[float, float]]]:
+    grouped: dict[int, list[tuple[float, float]]] = {}
+    for point, label in zip(points, labels):
+        grouped.setdefault(label, []).append(point)
+    clusters = [cluster for _, cluster in sorted(grouped.items(), key=lambda item: item[0]) if cluster]
+    return clusters
+
+
+def _convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    unique = sorted({(round(x, 6), round(y, 6)) for x, y in points})
+    if len(unique) <= 1:
+        return unique
+
+    def cross(o: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list[tuple[float, float]] = []
+    for point in unique:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0:
+            lower.pop()
+        lower.append(point)
+
+    upper: list[tuple[float, float]] = []
+    for point in reversed(unique):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0:
+            upper.pop()
+        upper.append(point)
+
+    return lower[:-1] + upper[:-1]
 
 
 def _invoke_multimodal_or_text(llm: Any, prompt_text: str, image_path: Path) -> Any:

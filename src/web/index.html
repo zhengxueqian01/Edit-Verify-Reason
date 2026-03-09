@@ -142,6 +142,73 @@
       background: var(--primary-hover);
     }
 
+    .tool-panel {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .tool-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+
+    .tool-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .tool-row-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 12px;
+      color: #4b5563;
+    }
+
+    .tool-row input[type="range"] {
+      width: 100%;
+      accent-color: var(--primary);
+    }
+
+    .tool-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .tool-actions button {
+      flex: 1;
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text);
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .tool-actions button:hover {
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+
+    .tool-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      background: #f8f9fb;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 8px 10px;
+    }
+
     /* Left Panel: Chat Interface */
     .chat-history {
       flex: 1;
@@ -273,36 +340,131 @@
     .visualization-area {
       flex: 1;
       padding: 16px;
-      overflow-y: auto;
       display: flex;
-      flex-direction: column;
-      gap: 16px;
       background: #fcfcfd;
+      position: relative;
+      overflow: hidden;
     }
 
     .img-card {
       background: #fff;
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 16px;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: 400px;
       position: relative;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
       overflow: hidden;
+      flex: 1;
+      height: 100%;
     }
 
-    .img-card-header {
+    /* Picture-in-Picture Card */
+    .pip-card {
       position: absolute;
-      top: 12px;
-      left: 12px;
+      bottom: 24px;
+      right: 24px;
+      width: 250px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08);
+      z-index: 50;
+      transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .pip-card:hover {
+      width: 480px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15), 0 4px 8px rgba(0, 0, 0, 0.1);
+      transform: translateY(-4px);
+    }
+
+    .pip-header {
+      position: relative;
+      top: 0;
+      left: 0;
+      width: 100%;
+      background: #f8f9fb;
+      border-bottom: 1px solid #edf0f5;
+      padding: 6px 10px;
+      font-size: 11px;
+    }
+
+    .pip-card img {
+      width: 100%;
+      height: auto;
+      max-height: none;
+      object-fit: contain;
+      display: none;
+      padding: 8px;
+    }
+
+    .pip-card img[src] {
+      display: block;
+    }
+
+    .tool-btn {
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      width: 28px;
+      height: 28px;
       display: flex;
       align-items: center;
-      gap: 8px;
-      z-index: 10;
+      justify-content: center;
+      color: #64748b;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .tool-btn:hover {
+      background: #f1f5f9;
+      color: var(--primary);
+    }
+
+    .tool-btn:active {
+      transform: scale(0.95);
+    }
+
+    .anno-btn {
+      flex: 1;
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text);
+      border-radius: 4px;
+      padding: 6px 0;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .anno-btn.active {
+      background: #e0e7ff;
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+
+    .anno-action-btn {
+      flex: 1;
+      border: 1px solid var(--border);
+      background: #f8f9fb;
+      color: var(--text);
+      border-radius: 4px;
+      padding: 6px 0;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .anno-action-btn:hover {
+      background: #e2e8f0;
     }
 
     .badge {
@@ -489,6 +651,21 @@
           <label style="margin-top: 16px;">Max Render Retries ($N$)</label>
           <input id="maxRetries" name="max_render_retries" type="number" min="0" value="2"
             style="width: 100%; border: 1px solid var(--border); padding: 8px 10px; border-radius: 4px; font-size: 13px; color: var(--text); outline: none; transition: border-color 0.2s;" />
+
+          <div class="tool-panel">
+            <label style="margin-bottom: 8px;">Annotation Mode</label>
+            <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+              <button class="anno-btn active" id="btnModePoint" type="button" title="Add Point">🖱️ Point</button>
+              <button class="anno-btn" id="btnModeLine" type="button" title="Draw Line">📏 Line</button>
+              <button class="anno-btn" id="btnModeBox" type="button" title="Draw Box">🔲 Box</button>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button class="anno-action-btn" id="btnUndoAnno" type="button">↩️ Undo</button>
+              <button class="anno-action-btn" id="btnClearAnno" type="button">🗑️ Clear</button>
+            </div>
+
+
+          </div>
         </div>
 
         <div class="chat-history" id="qaAnswer">
@@ -503,7 +680,7 @@
 
         <div class="chat-input-area">
           <div class="chat-input-wrapper">
-            <textarea id="question" name="question" placeholder="Type an instruction here..." required></textarea>
+            <textarea id="question" name="question" placeholder="Type an instruction here..."></textarea>
             <button id="submitBtn" type="submit">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round">
@@ -529,22 +706,79 @@
           ORIGINAL VA SYSTEM
         </div>
 
-        <div class="visualization-area">
+        <div class="visualization-area" id="visArea">
           <!-- Result Output -->
-          <div class="img-card">
-            <div class="img-card-header"><span class="badge output">Output</span> Modified System State</div>
-            <img id="resultImage" alt="Modified Output Result" />
+          <div class="img-card" id="outputCard" style="flex:1;">
+            <div class="img-card-header"
+              style="width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: #fff; border-bottom: 1px solid var(--border); z-index:10;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="badge output">Output</span> Modified System State
+              </div>
+              <div class="image-toolbar" id="imageToolbar"
+                style="display: none; align-items:center; gap:4px; background: #fff; padding: 4px; border-radius: 6px; border:1px solid #e2e8f0; height:fit-content;">
+                <button class="tool-btn" type="button" id="btnFullscreen" title="Fullscreen">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path
+                      d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3">
+                    </path>
+                  </svg>
+                </button>
+                <div style="width:1px; background:#e2e8f0; margin:4px 2px;"></div>
+                <button class="tool-btn" type="button" id="btnZoomOut" title="Zoom Out">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    <line x1="8" y1="11" x2="14" y2="11"></line>
+                  </svg>
+                </button>
+                <button class="tool-btn" type="button" id="btnZoomReset" title="Reset Zoom">
+                  <span style="font-size:11px; font-weight:600; padding:0 2px;">1:1</span>
+                </button>
+                <button class="tool-btn" type="button" id="btnZoomIn" title="Zoom In">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    <line x1="11" y1="8" x2="11" y2="14"></line>
+                    <line x1="8" y1="11" x2="14" y2="11"></line>
+                  </svg>
+                </button>
+                <div style="width:1px; background:#e2e8f0; margin:4px 2px;"></div>
+                <button class="tool-btn" type="button" id="btnDownload" title="Download Image">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div id="zoomContainer"
+              style="width:100%; height:100%; position:relative; display:flex; align-items:center; justify-content:center; overflow:auto; transition: transform 0.2s; transform-origin: center;">
+              <img id="resultImage" alt="Modified Output Result"
+                style="transition: transform 0.2s; max-width: none; max-height: none; display:none;" />
+              <canvas id="annoCanvas"
+                style="position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair; touch-action:none; pointer-events:none;"></canvas>
+            </div>
             <div class="empty-state" id="resultPlaceholderText">
               Waiting for execution command
             </div>
           </div>
 
-          <!-- Original Input -->
-          <div class="img-card">
-            <div class="img-card-header"><span class="badge input">Input</span> Original Data Source</div>
-            <img id="originalImage" alt="Original Input Data" />
-            <div class="empty-state" id="origPlaceholderText">
-              Awaiting Source File (.svg)
+          <!-- Original Input PIP -->
+          <div class="pip-card" id="pipCard">
+            <div class="pip-header">
+              <span class="badge input">Input</span> Original Reference
+            </div>
+            <div style="position:relative; width:100%; display:flex;">
+              <img id="originalImage" alt="Original Input Data" style="display:none; width:100%;" />
+            </div>
+            <div class="empty-state" id="origPlaceholderText" style="padding: 24px; text-align:center;">
+              Awaiting SVG...
             </div>
           </div>
         </div>
@@ -569,20 +803,174 @@
 
     const resultImage = document.getElementById('resultImage');
     const resultPlaceholderText = document.getElementById('resultPlaceholderText');
+    const annoCanvas = document.getElementById('annoCanvas');
+    const annoCtx = annoCanvas.getContext('2d');
+    const btnModePoint = document.getElementById('btnModePoint');
+    const btnModeLine = document.getElementById('btnModeLine');
+    const btnModeBox = document.getElementById('btnModeBox');
+    const btnUndoAnno = document.getElementById('btnUndoAnno');
+    const btnClearAnno = document.getElementById('btnClearAnno');
+
+    let sourcePreviewUrl = '';
+    let sourceImageElement = null;
+
+    let annoMode = 'point'; // point, line, box
+    let annotations = []; // { type: 'point', x, y }, { type: 'line', x1, y1, x2, y2 }, { type: 'box', x, y, w, h }
+    let isDrawing = false;
+    let startX = 0, startY = 0;
+
+    // Mode selection
+    const modeBtns = [btnModePoint, btnModeLine, btnModeBox];
+    function setAnnoMode(mode, activeBtn) {
+      annoMode = mode;
+      modeBtns.forEach(b => b.classList.remove('active'));
+      activeBtn.classList.add('active');
+    }
+    btnModePoint.addEventListener('click', () => setAnnoMode('point', btnModePoint));
+    btnModeLine.addEventListener('click', () => setAnnoMode('line', btnModeLine));
+    btnModeBox.addEventListener('click', () => setAnnoMode('box', btnModeBox));
+
+    function drawAnnotations() {
+      annoCtx.clearRect(0, 0, annoCanvas.width, annoCanvas.height);
+      annoCtx.strokeStyle = '#ef4444'; // Red
+      annoCtx.fillStyle = '#ef4444';
+      annoCtx.lineWidth = Math.max(2, annoCanvas.width / 300); // Scale line width by resolution
+
+      annotations.forEach(a => {
+        if (a.type === 'point') {
+          annoCtx.beginPath();
+          annoCtx.arc(a.x, a.y, Math.max(4, annoCanvas.width / 150), 0, Math.PI * 2);
+          annoCtx.fill();
+        } else if (a.type === 'line') {
+          annoCtx.beginPath();
+          annoCtx.moveTo(a.x1, a.y1);
+          annoCtx.lineTo(a.x2, a.y2);
+          annoCtx.stroke();
+        } else if (a.type === 'box') {
+          annoCtx.strokeRect(a.x, a.y, a.w, a.h);
+          annoCtx.fillStyle = 'rgba(239, 68, 68, 0.15)';
+          annoCtx.fillRect(a.x, a.y, a.w, a.h);
+          annoCtx.fillStyle = '#ef4444';
+        }
+      });
+    }
+
+    function getMousePos(evt) {
+      const rect = annoCanvas.getBoundingClientRect();
+      const scaleX = annoCanvas.width / rect.width;
+      const scaleY = annoCanvas.height / rect.height;
+      return {
+        x: (evt.clientX - rect.left) * scaleX,
+        y: (evt.clientY - rect.top) * scaleY
+      };
+    }
+
+    annoCanvas.addEventListener('mousedown', (e) => {
+      isDrawing = true;
+      const pos = getMousePos(e);
+      startX = pos.x;
+      startY = pos.y;
+      if (annoMode === 'point') {
+        annotations.push({ type: 'point', x: startX, y: startY });
+        drawAnnotations();
+        isDrawing = false; // Point is instant
+      }
+    });
+
+    annoCanvas.addEventListener('mousemove', (e) => {
+      if (!isDrawing) return;
+      const pos = getMousePos(e);
+      drawAnnotations(); // Redraw existing
+
+      // Draw current preview
+      annoCtx.strokeStyle = '#ef4444';
+      annoCtx.lineWidth = Math.max(2, annoCanvas.width / 300);
+      if (annoMode === 'line') {
+        annoCtx.beginPath();
+        annoCtx.moveTo(startX, startY);
+        annoCtx.lineTo(pos.x, pos.y);
+        annoCtx.stroke();
+      } else if (annoMode === 'box') {
+        annoCtx.strokeRect(startX, startY, pos.x - startX, pos.y - startY);
+        annoCtx.fillStyle = 'rgba(239, 68, 68, 0.15)';
+        annoCtx.fillRect(startX, startY, pos.x - startX, pos.y - startY);
+        annoCtx.fillStyle = '#ef4444';
+      }
+    });
+
+    annoCanvas.addEventListener('mouseup', (e) => {
+      if (!isDrawing) return;
+      isDrawing = false;
+      const pos = getMousePos(e);
+      if (annoMode === 'line') {
+        if (Math.abs(pos.x - startX) > 2 || Math.abs(pos.y - startY) > 2) {
+          annotations.push({ type: 'line', x1: startX, y1: startY, x2: pos.x, y2: pos.y });
+        }
+      } else if (annoMode === 'box') {
+        if (Math.abs(pos.x - startX) > 2 && Math.abs(pos.y - startY) > 2) {
+          annotations.push({ type: 'box', x: startX, y: startY, w: pos.x - startX, h: pos.y - startY });
+        }
+      }
+      drawAnnotations();
+    });
+
+    annoCanvas.addEventListener('mouseleave', () => {
+      if (isDrawing) {
+        isDrawing = false;
+        drawAnnotations();
+      }
+    });
+
+    btnUndoAnno.addEventListener('click', () => {
+      annotations.pop();
+      drawAnnotations();
+    });
+
+    btnClearAnno.addEventListener('click', () => {
+      annotations = [];
+      drawAnnotations();
+    });
+
+    function waitForImageLoad(src) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = src;
+      });
+    }
+
+    async function renderEnhancedBlob() {
+      if (!window.currentResultUrl || !resultImage.src) return null;
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = resultImage.naturalWidth || resultImage.width || 1;
+      exportCanvas.height = resultImage.naturalHeight || resultImage.height || 1;
+      const ctx = exportCanvas.getContext('2d');
+      // Draw output image
+      ctx.drawImage(resultImage, 0, 0, exportCanvas.width, exportCanvas.height);
+      // Draw annotations overlapping it
+      ctx.drawImage(annoCanvas, 0, 0, exportCanvas.width, exportCanvas.height);
+
+      return await new Promise((resolve) => exportCanvas.toBlob(resolve, 'image/png'));
+    }
 
     // Preview Original SVG
     svgFileInput.addEventListener('change', function (e) {
       const file = e.target.files[0];
       if (file && file.type === 'image/svg+xml') {
         const reader = new FileReader();
-        reader.onload = function (evt) {
-          originalImage.src = evt.target.result;
+        reader.onload = async function (evt) {
+          sourcePreviewUrl = evt.target.result;
+          originalImage.src = sourcePreviewUrl;
+          originalImage.style.display = 'block';
           origPlaceholderText.style.display = 'none';
           setStatus('Ready to execute.', '');
         };
         reader.readAsDataURL(file);
       } else {
+        sourcePreviewUrl = '';
         originalImage.removeAttribute('src');
+        originalImage.style.display = 'none';
         origPlaceholderText.style.display = 'flex';
         origPlaceholderText.innerHTML = file ? "Invalid format" : "Awaiting Source File (.svg)";
       }
@@ -620,10 +1008,7 @@
     function renderAllAnswersAsChat(data) {
       const result = (data && data.result && typeof data.result === 'object') ? data.result : {};
       const sections = [
-        ['Final Answer', result.answer, '#primary'],
-        ['Original Image Answer', result.answer_original, '#muted'],
-        ['Initial Answer', result.answer_initial, '#muted'],
-        ['Tool Augmented Answer', result.answer_tool_augmented, '#muted'],
+        ['Answer', result.answer_initial, '#primary'],
       ];
 
       let html = '';
@@ -646,9 +1031,9 @@
       <div class="chat-message">
         <div class="chat-time">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-          ${timeStr} - ${title}${title === 'Final Answer' ? modelNameBadge : ''}
+          ${timeStr} - ${title}${title === 'Answer' ? modelNameBadge : ''}
         </div>
-        <div class="chat-bubble" ${title === 'Final Answer' ? 'style="border-left-color:var(--accent-green);"' : ''}>
+        <div class="chat-bubble" ${title === 'Answer' ? 'style="border-left-color:var(--accent-green);"' : ''}>
           <h4>${title}</h4>
           <p>${answerText || '(No answer text provided)'}</p>
       `;
@@ -675,19 +1060,42 @@
       return html;
     }
 
+    let lastSubmittedQuery = '';
+
+    const questionInput = document.getElementById('question');
+    questionInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const hasText = questionInput.value.trim() !== '';
+        const hasAnnotations = annotations.length > 0;
+        if (!btn.disabled && (hasText || hasAnnotations)) {
+          form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        }
+      }
+    });
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
+
+      const rawQ = questionInput.value.trim();
+      const userQ = rawQ || lastSubmittedQuery; // Fallback to last query if empty
+
+      if (!userQ && annotations.length === 0) return; // Prevent completely empty submission
+
+      if (rawQ) {
+        lastSubmittedQuery = rawQ; // Update if new text provided
+      }
+
       btn.disabled = true;
-      const questionInput = document.getElementById('question');
 
       // Add User Query to Chat
-      const userQ = questionInput.value;
+      const displayQ = rawQ ? userQ : "(Visual Instruction Provided via Canvas)";
       const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
       const userMsg = `
     <div class="chat-message" style="align-self: flex-end;">
       <div class="chat-time" style="justify-content: flex-end;">User Query - ${timeStr}</div>
       <div class="chat-bubble" style="background:#f0f4ff; border-left:none; border-right: 3px solid var(--primary); border-radius: 6px 0 6px 6px;">
-        <p>${userQ.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
+        <p>${displayQ.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
       </div>
     </div>`;
 
@@ -699,13 +1107,20 @@
 
       setStatus('Processing instruction...', 'active');
 
-      resultImage.removeAttribute('src');
-      resultPlaceholderText.style.display = 'flex';
-      resultPlaceholderText.textContent = "Executing transformation...";
+      if (!window.currentResultUrl) {
+        resultPlaceholderText.style.display = 'flex';
+        resultPlaceholderText.textContent = "Executing transformation...";
+      } else {
+        resultImage.style.opacity = '0.5';
+      }
 
       try {
         const fd = new FormData(form);
         fd.set('question', userQ);
+        const enhancedBlob = await renderEnhancedBlob();
+        if (enhancedBlob) {
+          fd.set('enhanced_image', enhancedBlob, 'enhanced.png');
+        }
         const respPromise = fetch('/api/run', { method: 'POST', body: fd });
         questionInput.value = '';
         const resp = await respPromise;
@@ -716,7 +1131,26 @@
         qaAnswer.scrollTop = qaAnswer.scrollHeight;
 
         if (data.output_image_url) {
+          window.currentResultUrl = data.output_image_url;
+          document.getElementById('imageToolbar').style.display = 'flex';
+
+          // Show the result image
+          resultImage.style.display = 'block';
+          resultImage.onload = () => {
+            // Sync canvas size to loaded output image
+            annoCanvas.width = resultImage.naturalWidth || 800;
+            annoCanvas.height = resultImage.naturalHeight || 600;
+            annoCanvas.style.pointerEvents = 'auto'; // enable drawing
+
+            // Match canvas visual size exactly to the image's visual size
+            const rect = resultImage.getBoundingClientRect();
+            annoCanvas.style.width = `${rect.width}px`;
+            annoCanvas.style.height = `${rect.height}px`;
+
+            drawAnnotations();
+          };
           resultImage.src = data.output_image_url + '?t=' + Date.now();
+          resultImage.style.opacity = '1';
           resultPlaceholderText.style.display = 'none';
           setStatus('Analysis complete', 'success');
         } else if (!resp.ok) {
@@ -732,9 +1166,53 @@
         setStatus('Network exception occurred', 'error');
       } finally {
         btn.disabled = false;
+        resultImage.style.opacity = '1';
         qaAnswer.scrollTop = qaAnswer.scrollHeight;
       }
     });
+    // Toolbar Logic
+    let currentZoom = 1;
+
+    document.getElementById('btnZoomIn').addEventListener('click', () => {
+      currentZoom += 0.25;
+      resultImage.style.transform = `scale(${currentZoom})`;
+      annoCanvas.style.transform = `scale(${currentZoom})`;
+    });
+
+    document.getElementById('btnZoomOut').addEventListener('click', () => {
+      currentZoom = Math.max(0.25, currentZoom - 0.25);
+      resultImage.style.transform = `scale(${currentZoom})`;
+      annoCanvas.style.transform = `scale(${currentZoom})`;
+    });
+
+    document.getElementById('btnZoomReset').addEventListener('click', () => {
+      currentZoom = 1;
+      resultImage.style.transform = `scale(1)`;
+      annoCanvas.style.transform = `scale(1)`;
+    });
+
+    document.getElementById('btnFullscreen').addEventListener('click', () => {
+      const card = document.getElementById('outputCard');
+      if (!document.fullscreenElement) {
+        card.requestFullscreen().catch(err => {
+          console.error(`Error attempting to enable fullscreen: ${err.message}`);
+        });
+      } else {
+        document.exitFullscreen();
+      }
+    });
+
+    document.getElementById('btnDownload').addEventListener('click', () => {
+      if (window.currentResultUrl) {
+        const a = document.createElement('a');
+        a.href = window.currentResultUrl;
+        a.download = 'modified_chart_output';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+    });
+
   </script>
 
 </body>

@@ -4,6 +4,7 @@ from __future__ import annotations
 import cgi
 import json
 import os
+import re
 import shutil
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -44,6 +45,8 @@ class AppHandler(BaseHTTPRequestHandler):
             mime = "image/svg+xml"
         elif suffix in (".jpg", ".jpeg"):
             mime = "image/jpeg"
+        elif suffix == ".webp":
+            mime = "image/webp"
         raw = file_path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", mime)
@@ -87,6 +90,7 @@ class AppHandler(BaseHTTPRequestHandler):
         )
 
         svg_item = form["svg_file"] if "svg_file" in form else None
+        enhanced_image_item = form["enhanced_image"] if "enhanced_image" in form else None
         if svg_item is None or not getattr(svg_item, "file", None):
             self._send_json(400, {"error": "svg_file is required"})
             return
@@ -116,6 +120,7 @@ class AppHandler(BaseHTTPRequestHandler):
         svg_path = upload_dir / f"{case_stem}.svg"
         with svg_path.open("wb") as f:
             shutil.copyfileobj(svg_item.file, f)
+        enhanced_image_path = _save_optional_enhanced_image(enhanced_image_item, upload_dir, case_stem)
 
         try:
             result = run_main(
@@ -125,7 +130,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "qa_question": qa_question,
                     "svg_path": str(svg_path),
                     "text_spec": None,
-                    "image_path": None,
+                    "answer_image_path": enhanced_image_path,
                     "max_render_retries": max_render_retries,
                 }
             )
@@ -182,6 +187,8 @@ class AppHandler(BaseHTTPRequestHandler):
             "answer_issues": (answer.get("issues", []) if isinstance(answer, dict) else []),
             "qa_answer": qa_answer,
             "model_name": model_name,
+            "enhanced_image_path": enhanced_image_path,
+            "enhanced_image_url": ("/files/" + enhanced_image_path.lstrip("/")) if enhanced_image_path else None,
             "output_image_path": output_image_path,
             "output_image_url": output_image_url,
             "result": result,
@@ -206,6 +213,34 @@ def _get_int(form: cgi.FieldStorage, key: str, default: int = 0) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _save_optional_enhanced_image(
+    enhanced_image_item: cgi.FieldStorage | None,
+    upload_dir: Path,
+    case_stem: str,
+) -> str | None:
+    if enhanced_image_item is None or not getattr(enhanced_image_item, "file", None):
+        return None
+
+    filename = Path(getattr(enhanced_image_item, "filename", "") or "").name
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        content_type = str(getattr(enhanced_image_item, "type", "") or "").lower()
+        if "png" in content_type:
+            suffix = ".png"
+        elif "jpeg" in content_type or "jpg" in content_type:
+            suffix = ".jpg"
+        elif "webp" in content_type:
+            suffix = ".webp"
+        else:
+            suffix = ".png"
+
+    safe_stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", case_stem).strip("._") or "upload"
+    enhanced_path = upload_dir / f"{safe_stem}_enhanced{suffix}"
+    with enhanced_path.open("wb") as f:
+        shutil.copyfileobj(enhanced_image_item.file, f)
+    return str(enhanced_path)
 
 
 def main() -> None:

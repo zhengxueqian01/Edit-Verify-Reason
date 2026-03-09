@@ -50,6 +50,52 @@ function extractNumericComment(element) {
   return Number.isFinite(visible) ? visible : Number.NaN;
 }
 
+function extractAxisScale(svgElement, axisId) {
+  const axis = getGroupById(svgElement, axisId);
+  if (!axis) {
+    return 1;
+  }
+  const attr = Number.parseFloat(axis.getAttribute("data-axis-scale") || "");
+  if (Number.isFinite(attr) && attr !== 0) {
+    return attr;
+  }
+  const serialized = new XMLSerializer().serializeToString(axis);
+  const sciPatterns = [
+    /<!--\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+)e[+-]?\d+)\s*-->/i,
+    /<!--\s*10\^([+-]?\d+)\s*-->/i,
+    /<!--\s*[×x]\s*10\^([+-]?\d+)\s*-->/i,
+  ];
+  for (const pattern of sciPatterns) {
+    const match = serialized.match(pattern);
+    if (!match) {
+      continue;
+    }
+    const token = match[1];
+    let scale = Number.NaN;
+    if (pattern.source.includes("10\\^")) {
+      scale = 10 ** Number.parseFloat(token);
+    } else {
+      scale = Number.parseFloat(token);
+    }
+    if (Number.isFinite(scale) && scale !== 0) {
+      return scale;
+    }
+  }
+  return 1;
+}
+
+function setAxisScaleMetadata(svgElement, axisId, axisScale) {
+  const axis = getGroupById(svgElement, axisId);
+  if (!axis) {
+    return;
+  }
+  if (Number.isFinite(axisScale) && axisScale !== 1 && axisScale !== 0) {
+    axis.setAttribute("data-axis-scale", String(axisScale));
+    return;
+  }
+  axis.removeAttribute("data-axis-scale");
+}
+
 function extractPathStroke(path) {
   const style = path?.getAttribute("style") || "";
   const match = style.match(/stroke:\s*(#[0-9a-fA-F]{6})/);
@@ -188,6 +234,7 @@ function parseAxisTicks(svgElement, axisId, tickPrefix, isX) {
   if (!axis) {
     return [];
   }
+  const scale = isX ? 1 : extractAxisScale(svgElement, axisId);
   const ticks = [];
   const tickGroups = getGroupsByPrefix(axis, tickPrefix);
   for (const group of tickGroups) {
@@ -206,7 +253,7 @@ function parseAxisTicks(svgElement, axisId, tickPrefix, isX) {
     const textGroup = getGroupsByPrefix(group, "text_")[0] || group;
     const value = extractNumericComment(textGroup);
     if (Number.isFinite(pixel) && Number.isFinite(value)) {
-      ticks.push([pixel, value]);
+      ticks.push([pixel, value * scale]);
     }
   }
   ticks.sort((a, b) => a[1] - b[1]);
@@ -760,11 +807,16 @@ function mapDataToPixel(value, dataMin, dataMax, pixelMin, pixelMax) {
   return pixelMin + ratio * (pixelMax - pixelMin);
 }
 
-function formatTickLabel(value) {
-  if (Math.abs(value - Math.round(value)) < 1e-6) {
-    return `${Math.round(value)}`;
+function formatTickLabel(value, axisScale = 1) {
+  const scaledValue =
+    Number.isFinite(axisScale) && axisScale !== 0 ? value / axisScale : value;
+  if (!Number.isFinite(scaledValue)) {
+    return `${value}`;
   }
-  return value.toFixed(2).replace(/\.?0+$/, "");
+  if (Math.abs(scaledValue - Math.round(scaledValue)) < 1e-6) {
+    return `${Math.round(scaledValue)}`;
+  }
+  return scaledValue.toFixed(2).replace(/\.?0+$/, "");
 }
 
 function fallbackTickTextX(tickGroup) {
@@ -804,7 +856,7 @@ function updateTickLinePosition(tickGroup, newY) {
   }
 }
 
-function updateTickLabel(tickGroup, value, textX, textY) {
+function updateTickLabel(tickGroup, value, textX, textY, axisScale = 1) {
   let textGroup = getGroupsByPrefix(tickGroup, "text_")[0];
   if (!textGroup) {
     textGroup = document.createElementNS(SVG_NS, "g");
@@ -812,7 +864,7 @@ function updateTickLabel(tickGroup, value, textX, textY) {
     tickGroup.appendChild(textGroup);
   }
   clearChildren(textGroup);
-  const label = formatTickLabel(value);
+  const label = formatTickLabel(value, axisScale);
   const text = document.createElementNS(SVG_NS, "text");
   text.setAttribute("x", (Number.isFinite(textX) ? textX : fallbackTickTextX(tickGroup)).toFixed(6));
   text.setAttribute("y", textY.toFixed(6));
@@ -823,11 +875,12 @@ function updateTickLabel(tickGroup, value, textX, textY) {
   textGroup.appendChild(text);
 }
 
-function updateYAxisTicks(svgElement, newTicks) {
+function updateYAxisTicks(svgElement, newTicks, axisScale = 1) {
   const axis = getGroupById(svgElement, "matplotlib.axis_2");
   if (!axis) {
     return;
   }
+  setAxisScaleMetadata(svgElement, "matplotlib.axis_2", axisScale);
   const tickGroups = getGroupsByPrefix(axis, "ytick_");
   if (!tickGroups.length) {
     return;
@@ -848,7 +901,8 @@ function updateYAxisTicks(svgElement, newTicks) {
       tickGroup,
       newValue,
       anchor.x,
-      newY + (Number.isFinite(anchor.offset) ? anchor.offset : 0)
+      newY + (Number.isFinite(anchor.offset) ? anchor.offset : 0),
+      axisScale
     );
   }
 }
@@ -890,6 +944,7 @@ function rescaleLineAfterRemoval(svgElement, axes, yTicks) {
   if (!Array.isArray(yTicks) || yTicks.length < 2) {
     return;
   }
+  const yAxisScale = extractAxisScale(svgElement, "matplotlib.axis_2");
   const lineGroups = detectLineGroups(axes);
   if (!lineGroups.length) {
     return;
@@ -920,7 +975,7 @@ function rescaleLineAfterRemoval(svgElement, axes, yTicks) {
   const oldMaxPixel = oldTicksSorted[oldTicksSorted.length - 1][0];
   const newValues = buildTicks(newMin, newMax, yTicks.length);
   const newTicks = newValues.map((v) => [mapDataToPixel(v, newMin, newMax, oldMinPixel, oldMaxPixel), v]);
-  updateYAxisTicks(svgElement, newTicks);
+  updateYAxisTicks(svgElement, newTicks, yAxisScale);
   rescaleSeriesGroups(lineGroups, yTicks, newMin, newMax, oldMinPixel, oldMaxPixel);
 }
 

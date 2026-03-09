@@ -116,12 +116,23 @@ Then open `http://127.0.0.1:8008`.
   - `output_image_path`
   - `render_check`
   - `attempt_logs`
-  - `answer`, `answer_initial`, `answer_tool_augmented`
+  - `answer_initial`: the initial QA result
+  - `answer_tool_augmented`: produced only when the initial answer has low confidence and tool-based image augmentation is triggered
+  - `answer`: the final adopted answer; usually the tool-augmented answer if augmentation runs successfully, otherwise the initial answer
+
+## Tool-Based Image Augmentation
+
+- `src.main` first produces `answer_initial` and reads its `confidence`.
+- Tool-based image augmentation is triggered only when `answer_initial.confidence` is low.
+- `answer_initial.confidence` is now normalized to the `0-1` range before it is used for routing.
+- The current automatic visual tools are `add_point`, `draw_line`, `highlight_rect`, and `isolate_color_topology`.
+- `add_text` has been removed from the autonomous tool selection stage.
+- `isolate_color_topology` is designed for scatter charts: it fades non-target colors and draws convex hulls around DBSCAN clusters of the target-color points.
 
 ## TODO
 
-- Optimize the current model autonomous tool-calling workflow.
 - Validate the match quality between generated SVGs and ground truth.
 - Optimize the current dataset.
 - Evaluate dataset performance across four models.
 - Optimize the validation script.
+- Add web-side image enhancement tools so users can manually improve chart visibility and send the enhanced image to the model for better results.
