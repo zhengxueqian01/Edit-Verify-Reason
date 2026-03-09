@@ -59,6 +59,25 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "target_color": "string color name or hex chosen from the legend, such as red, blue, or #ff0000",
         },
     },
+    {
+        "name": "draw_global_peak_crosshairs",
+        "description": (
+            "For area charts, scan all area vertices, find the absolute highest point "
+            "(minimum SVG y), and draw global horizontal and vertical crosshairs plus a peak marker."
+        ),
+        "args": {},
+    },
+    {
+        "name": "zoom_and_highlight_intersection",
+        "description": (
+            "For line charts, extract two named line series, compute polyline intersections, "
+            "and mark the intersections with highlighted symbols."
+        ),
+        "args": {
+            "line_A": "string exact or near-exact line label from the legend",
+            "line_B": "string exact or near-exact line label from the legend",
+        },
+    },
 ]
 
 
@@ -192,7 +211,14 @@ def _coerce_tool_calls(
             continue
         tool = str(item.get("tool") or "").strip()
         args = item.get("args", {})
-        if tool not in {"add_point", "draw_line", "highlight_rect", "isolate_color_topology"}:
+        if tool not in {
+            "add_point",
+            "draw_line",
+            "highlight_rect",
+            "isolate_color_topology",
+            "draw_global_peak_crosshairs",
+            "zoom_and_highlight_intersection",
+        }:
             rejected.append({"tool": tool, "args": args, "reason": "unknown_tool"})
             continue
         if not isinstance(args, dict):
@@ -305,6 +331,31 @@ def _normalize_tool_call(
             },
             None,
         )
+    if tool == "draw_global_peak_crosshairs":
+        return (
+            {
+                "tool": tool,
+                "args": {},
+            },
+            None,
+        )
+    if tool == "zoom_and_highlight_intersection":
+        line_a = _short_text(str(args.get("line_A") or "").strip(), 64)
+        line_b = _short_text(str(args.get("line_B") or "").strip(), 64)
+        if not line_a or not line_b:
+            return None, "missing_line_labels"
+        if line_a.lower() == line_b.lower():
+            return None, "same_line_labels"
+        return (
+            {
+                "tool": tool,
+                "args": {
+                    "line_A": line_a,
+                    "line_B": line_b,
+                },
+            },
+            None,
+        )
     return None, "unknown_tool"
 
 
@@ -349,6 +400,10 @@ def _execute_svg_tool_calls(
                 _svg_highlight_rect(overlay, ns, args, canvas_w, canvas_h)
             elif tool == "isolate_color_topology":
                 _svg_isolate_color_topology(root, overlay, ns, args, canvas_w, canvas_h)
+            elif tool == "draw_global_peak_crosshairs":
+                _svg_draw_global_peak_crosshairs(root, overlay, ns, canvas_w, canvas_h)
+            elif tool == "zoom_and_highlight_intersection":
+                _svg_zoom_and_highlight_intersection(root, overlay, ns, args, canvas_w, canvas_h)
             else:
                 raise ValueError(f"unknown tool: {tool}")
             executed.append({"index": idx + 1, "tool": tool, "args": args})
@@ -558,6 +613,118 @@ def _svg_isolate_color_topology(
         )
 
 
+def _svg_draw_global_peak_crosshairs(
+    root: ET.Element,
+    overlay: ET.Element,
+    ns: str,
+    w: float,
+    h: float,
+) -> None:
+    area_points = _extract_area_geometry_points(root, ns)
+    if not area_points:
+        raise ValueError("no area geometry found")
+
+    peak_x, peak_y = min(area_points, key=lambda point: (point[1], point[0]))
+    color = "#ff3b30"
+    dash = "5,5"
+
+    ET.SubElement(
+        overlay,
+        _nstag(ns, "line"),
+        {
+            "x1": "0.000000",
+            "y1": f"{peak_y:.6f}",
+            "x2": f"{w:.6f}",
+            "y2": f"{peak_y:.6f}",
+            "stroke": color,
+            "stroke-width": "2.000000",
+            "stroke-dasharray": dash,
+            "stroke-opacity": "0.96",
+        },
+    )
+    ET.SubElement(
+        overlay,
+        _nstag(ns, "line"),
+        {
+            "x1": f"{peak_x:.6f}",
+            "y1": f"{peak_y:.6f}",
+            "x2": f"{peak_x:.6f}",
+            "y2": f"{h:.6f}",
+            "stroke": color,
+            "stroke-width": "2.000000",
+            "stroke-dasharray": dash,
+            "stroke-opacity": "0.96",
+        },
+    )
+    ET.SubElement(
+        overlay,
+        _nstag(ns, "circle"),
+        {
+            "cx": f"{peak_x:.6f}",
+            "cy": f"{peak_y:.6f}",
+            "r": "5.000000",
+            "fill": color,
+            "fill-opacity": "0.98",
+            "stroke": "#ffffff",
+            "stroke-width": "0.8",
+        },
+    )
+
+
+def _svg_zoom_and_highlight_intersection(
+    root: ET.Element,
+    overlay: ET.Element,
+    ns: str,
+    args: dict[str, Any],
+    w: float,
+    h: float,
+) -> None:
+    line_a = _short_text(str(args.get("line_A") or "").strip(), 64)
+    line_b = _short_text(str(args.get("line_B") or "").strip(), 64)
+    if not line_a or not line_b:
+        raise ValueError("line_A and line_B are required")
+
+    content = ET.tostring(root, encoding="unicode")
+    legend_map = _extract_line_legend_map(root, ns, content)
+    stroke_a = _resolve_line_stroke(line_a, legend_map)
+    stroke_b = _resolve_line_stroke(line_b, legend_map)
+    if not stroke_a or not stroke_b:
+        raise ValueError("line labels not found in legend")
+
+    points_a = _extract_line_points_by_stroke(root, ns, stroke_a)
+    points_b = _extract_line_points_by_stroke(root, ns, stroke_b)
+    if len(points_a) < 2 or len(points_b) < 2:
+        raise ValueError("line geometry not found")
+
+    intersections = _polyline_intersections(points_a, points_b)
+    if not intersections:
+        raise ValueError("no intersections found")
+
+    marker_color = "#ff3b30"
+    for x, y in intersections:
+        _svg_add_point(
+            overlay,
+            ns,
+            {"x": x, "y": y, "radius": 4.8, "color": marker_color, "label": ""},
+            w,
+            h,
+        )
+        _svg_draw_line(
+            overlay,
+            ns,
+            {"x1": x - 5.5, "y1": y, "x2": x + 5.5, "y2": y, "width": 1.6, "color": marker_color, "label": ""},
+            w,
+            h,
+        )
+        _svg_draw_line(
+            overlay,
+            ns,
+            {"x1": x, "y1": y - 5.5, "x2": x, "y2": y + 5.5, "width": 1.6, "color": marker_color, "label": ""},
+            w,
+            h,
+        )
+
+
 def _find_overlay_parent(root: ET.Element, ns: str) -> ET.Element:
     axes = root.find(f".//{_nstag(ns, 'g')}[@id='axes_1']")
     if axes is not None:
@@ -707,6 +874,189 @@ def _extract_colored_scatter_points(root: ET.Element, ns: str) -> list[dict[str,
         except ValueError:
             continue
     return points
+
+
+def _extract_area_geometry_points(root: ET.Element, ns: str) -> list[tuple[float, float]]:
+    axes = root.find(f".//{_nstag(ns, 'g')}[@id='axes_1']")
+    if axes is None:
+        axes = root
+
+    points: list[tuple[float, float]] = []
+    for group in axes.findall(f".//{_nstag(ns, 'g')}"):
+        gid = str(group.get("id") or "")
+        if not gid.startswith("FillBetweenPolyCollection_"):
+            continue
+        for path in group.findall(f".//{_nstag(ns, 'path')}"):
+            points.extend(_parse_svg_path_points(path.get("d")))
+        for polygon in group.findall(f".//{_nstag(ns, 'polygon')}"):
+            points.extend(_parse_svg_polygon_points(polygon.get("points")))
+    return points
+
+
+def _extract_line_legend_map(root: ET.Element, ns: str, content: str) -> dict[str, str]:
+    legend = root.find(f".//{_nstag(ns, 'g')}[@id='legend_1']")
+    if legend is None:
+        return {}
+
+    mapping: dict[str, str] = {}
+    pending_stroke: str | None = None
+    for child in list(legend):
+        stroke = _extract_stroke_from_group(child, ns)
+        if stroke:
+            pending_stroke = stroke
+            continue
+        label = _extract_text_label_from_group(child, content)
+        if label and pending_stroke:
+            mapping[label] = pending_stroke
+            pending_stroke = None
+    return mapping
+
+
+def _extract_stroke_from_group(group: ET.Element, ns: str) -> str | None:
+    path = group.find(f".//{_nstag(ns, 'path')}")
+    if path is None:
+        return None
+    style = str(path.get("style") or "")
+    match = re.search(r"stroke:\s*(#[0-9a-fA-F]{6})", style)
+    if match:
+        return match.group(1).lower()
+    stroke = str(path.get("stroke") or "").strip().lower()
+    if re.match(r"^#[0-9a-f]{6}$", stroke):
+        return stroke
+    return None
+
+
+def _extract_text_label_from_group(group: ET.Element, content: str) -> str | None:
+    gid = str(group.get("id") or "")
+    if not gid.startswith("text_"):
+        return None
+    pattern = rf'<g\s+id="{re.escape(gid)}"[^>]*>.*?<!--\s*(.*?)\s*-->'
+    match = re.search(pattern, content, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _resolve_line_stroke(label: str, legend_map: dict[str, str]) -> str | None:
+    exact = {key.lower(): value for key, value in legend_map.items()}
+    if label.lower() in exact:
+        return exact[label.lower()]
+    for key, value in legend_map.items():
+        lowered = key.lower()
+        target = label.lower()
+        if target in lowered or lowered in target:
+            return value
+    return None
+
+
+def _extract_line_points_by_stroke(root: ET.Element, ns: str, stroke: str) -> list[tuple[float, float]]:
+    axes = root.find(f".//{_nstag(ns, 'g')}[@id='axes_1']")
+    if axes is None:
+        return []
+    stroke_norm = stroke.lower()
+    for group in axes.findall(f".//{_nstag(ns, 'g')}"):
+        gid = str(group.get("id") or "")
+        if not gid.startswith("line2d_"):
+            continue
+        path = group.find(f".//{_nstag(ns, 'path')}")
+        if path is None:
+            continue
+        style = str(path.get("style") or "")
+        match = re.search(r"stroke:\s*(#[0-9a-fA-F]{6})", style)
+        path_stroke = match.group(1).lower() if match else str(path.get("stroke") or "").strip().lower()
+        if path_stroke == stroke_norm:
+            return _parse_svg_path_points(path.get("d"))
+    return []
+
+
+def _parse_svg_path_points(d_attr: Any) -> list[tuple[float, float]]:
+    text = str(d_attr or "").strip()
+    if not text:
+        return []
+    coords = re.findall(r"([ML])\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)", text)
+    points: list[tuple[float, float]] = []
+    for _, x_raw, y_raw in coords:
+        try:
+            points.append((float(x_raw), float(y_raw)))
+        except ValueError:
+            continue
+    return points
+
+
+def _parse_svg_polygon_points(points_attr: Any) -> list[tuple[float, float]]:
+    text = str(points_attr or "").strip()
+    if not text:
+        return []
+    tokens = re.split(r"[\s,]+", text)
+    if len(tokens) < 4:
+        return []
+    points: list[tuple[float, float]] = []
+    for idx in range(0, len(tokens) - 1, 2):
+        try:
+            points.append((float(tokens[idx]), float(tokens[idx + 1])))
+        except ValueError:
+            continue
+    return points
+
+
+def _polyline_intersections(
+    points_a: list[tuple[float, float]],
+    points_b: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    intersections: list[tuple[float, float]] = []
+    seen: set[tuple[float, float]] = set()
+    for idx in range(len(points_a) - 1):
+        a1 = points_a[idx]
+        a2 = points_a[idx + 1]
+        for jdx in range(len(points_b) - 1):
+            b1 = points_b[jdx]
+            b2 = points_b[jdx + 1]
+            point = _segment_intersection(a1, a2, b1, b2)
+            if point is None:
+                continue
+            key = (round(point[0], 3), round(point[1], 3))
+            if key in seen:
+                continue
+            seen.add(key)
+            intersections.append(point)
+    return intersections
+
+
+def _segment_intersection(
+    a1: tuple[float, float],
+    a2: tuple[float, float],
+    b1: tuple[float, float],
+    b2: tuple[float, float],
+) -> tuple[float, float] | None:
+    x1, y1 = a1
+    x2, y2 = a2
+    x3, y3 = b1
+    x4, y4 = b2
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < 1e-9:
+        return None
+    det_a = x1 * y2 - y1 * x2
+    det_b = x3 * y4 - y3 * x4
+    px = (det_a * (x3 - x4) - (x1 - x2) * det_b) / denom
+    py = (det_a * (y3 - y4) - (y1 - y2) * det_b) / denom
+    if not _point_on_segment(px, py, a1, a2):
+        return None
+    if not _point_on_segment(px, py, b1, b2):
+        return None
+    return (px, py)
+
+
+def _point_on_segment(
+    px: float,
+    py: float,
+    a: tuple[float, float],
+    b: tuple[float, float],
+) -> bool:
+    min_x = min(a[0], b[0]) - 1e-6
+    max_x = max(a[0], b[0]) + 1e-6
+    min_y = min(a[1], b[1]) - 1e-6
+    max_y = max(a[1], b[1]) + 1e-6
+    return min_x <= px <= max_x and min_y <= py <= max_y
 
 
 def _extract_fill_from_element(elem: ET.Element) -> str:
