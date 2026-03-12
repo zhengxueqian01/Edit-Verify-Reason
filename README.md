@@ -125,9 +125,10 @@ Then open `http://127.0.0.1:8008`.
 - `src.main` first produces `answer_initial` and reads its `confidence`.
 - Tool-based image augmentation is triggered only when `answer_initial.confidence` is low.
 - `answer_initial.confidence` is now normalized to the `0-1` range before it is used for routing.
-- The current automatic visual tools are `add_point`, `draw_line`, `highlight_rect`, `isolate_color_topology`, `draw_global_peak_crosshairs`, and `zoom_and_highlight_intersection`.
+- The current automatic visual tools are `add_point`, `draw_line`, `highlight_rect`, `isolate_color_topology`, `isolate_all_color_topologies`, `draw_global_peak_crosshairs`, and `zoom_and_highlight_intersection`.
 - `add_text` has been removed from the autonomous tool selection stage.
-- `isolate_color_topology` is designed for scatter charts: it fades non-target colors and draws convex hulls around DBSCAN clusters of the target-color points.
+- `isolate_color_topology` is designed for single-color scatter questions: it fades non-target colors and draws convex hulls around DBSCAN clusters of the target-color points.
+- `isolate_all_color_topologies` is designed for global scatter clustering questions: it clusters points separately for each detected color and draws hulls for all color-specific clusters.
 - `draw_global_peak_crosshairs` is designed for area charts: it runs with zero parameters, scans global area vertices, and draws horizontal/vertical crosshairs at the absolute peak.
 - `zoom_and_highlight_intersection` is designed for line charts: it resolves `line_A` and `line_B` from the legend, computes segment intersections, and injects red intersection markers.
 

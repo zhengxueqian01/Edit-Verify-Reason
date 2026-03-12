@@ -60,6 +60,14 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "isolate_all_color_topologies",
+        "description": (
+            "For scatter charts, cluster points separately for every detected color and draw "
+            "convex hull polygons around all color-specific clusters."
+        ),
+        "args": {},
+    },
+    {
         "name": "draw_global_peak_crosshairs",
         "description": (
             "For area charts, scan all area vertices, find the absolute highest point "
@@ -153,6 +161,7 @@ def _plan_tool_calls(
         "Important: chart updates have already been applied to this SVG.\n"
         "Do NOT re-apply edits and do NOT add factual conclusions onto the chart.\n"
         "Only add light visual guides for answering the QA question.\n"
+        "You must choose tools according to the chart type and the QA task.\n"
         "First, explicitly state your understanding of the QA question.\n"
         "Return JSON only with schema:\n"
         "{\"qa_understanding\":string,\"tool_calls\":[{\"tool\":string,\"args\":object}],\"notes\":string}\n"
@@ -160,6 +169,15 @@ def _plan_tool_calls(
         "- Use only tools listed below.\n"
         "- Use SVG coordinates only.\n"
         f"- Canvas size is width={canvas_width:.2f}, height={canvas_height:.2f}.\n"
+        "- Tool selection by chart type:\n"
+        "  * scatter: use isolate_color_topology for one target color, isolate_all_color_topologies for all clusters, and use add_point/draw_line/highlight_rect only as light local guides.\n"
+        "  * line: use zoom_and_highlight_intersection for counting or locating crossings between two named lines, and use add_point/draw_line/highlight_rect only as light local guides.\n"
+        "  * area: use draw_global_peak_crosshairs for absolute/global highest-peak questions, and use add_point/draw_line/highlight_rect only as light local guides.\n"
+        "  * bar/unknown/other: do not use scatter-only, line-only, or area-only tools unless the visual structure truly matches that tool.\n"
+        "- Cross-type restrictions:\n"
+        "  * Do not use isolate_color_topology or isolate_all_color_topologies unless the chart is a scatter chart or scatter-like point cloud.\n"
+        "  * Do not use zoom_and_highlight_intersection unless the chart contains line series and the task is about line crossings/intersections.\n"
+        "  * Do not use draw_global_peak_crosshairs unless the chart is an area chart and the task is about the global top peak.\n"
         "- Keep overlays minimal and non-occluding.\n"
         "- Prefer 1-3 calls; use 4+ only if the question truly requires multiple marks.\n"
         "- Never add duplicate or near-duplicate marks.\n"
@@ -216,6 +234,7 @@ def _coerce_tool_calls(
             "draw_line",
             "highlight_rect",
             "isolate_color_topology",
+            "isolate_all_color_topologies",
             "draw_global_peak_crosshairs",
             "zoom_and_highlight_intersection",
         }:
@@ -339,6 +358,14 @@ def _normalize_tool_call(
             },
             None,
         )
+    if tool == "isolate_all_color_topologies":
+        return (
+            {
+                "tool": tool,
+                "args": {},
+            },
+            None,
+        )
     if tool == "zoom_and_highlight_intersection":
         line_a = _short_text(str(args.get("line_A") or "").strip(), 64)
         line_b = _short_text(str(args.get("line_B") or "").strip(), 64)
@@ -400,6 +427,8 @@ def _execute_svg_tool_calls(
                 _svg_highlight_rect(overlay, ns, args, canvas_w, canvas_h)
             elif tool == "isolate_color_topology":
                 _svg_isolate_color_topology(root, overlay, ns, args, canvas_w, canvas_h)
+            elif tool == "isolate_all_color_topologies":
+                _svg_isolate_all_color_topologies(root, overlay, ns, canvas_w, canvas_h)
             elif tool == "draw_global_peak_crosshairs":
                 _svg_draw_global_peak_crosshairs(root, overlay, ns, canvas_w, canvas_h)
             elif tool == "zoom_and_highlight_intersection":
@@ -575,42 +604,56 @@ def _svg_isolate_color_topology(
     clusters = _group_points_by_label(target_points, labels)
     hull_color = "#ff3b30"
     for cluster_points in clusters:
-        if len(cluster_points) == 1:
-            x, y = cluster_points[0]
-            _svg_add_point(
-                overlay,
-                ns,
-                {"x": x, "y": y, "radius": 5.0, "color": hull_color, "label": ""},
-                w,
-                h,
-            )
+        _draw_cluster_outline(overlay, ns, cluster_points, hull_color, w, h)
+
+
+def _svg_isolate_all_color_topologies(
+    root: ET.Element,
+    overlay: ET.Element,
+    ns: str,
+    w: float,
+    h: float,
+) -> None:
+    points = _extract_colored_scatter_points(root, ns)
+    if not points:
+        raise ValueError("no scatter points found")
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for point in points:
+        fill = str(point.get("fill") or "").lower()
+        if not fill:
             continue
-        if len(cluster_points) == 2:
-            (x1, y1), (x2, y2) = cluster_points
-            _svg_draw_line(
-                overlay,
-                ns,
-                {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "width": 2.2, "color": hull_color, "label": ""},
-                w,
-                h,
-            )
+        grouped.setdefault(fill, []).append(point)
+
+    if not grouped:
+        raise ValueError("no colored scatter points found")
+
+    active_colors = sorted(grouped)
+    for point in points:
+        elem = point.get("element")
+        if not isinstance(elem, ET.Element):
             continue
-        hull = _convex_hull(cluster_points)
-        if len(hull) < 3:
+        fill = str(point.get("fill") or "").lower()
+        if fill in active_colors:
+            _set_element_opacity(elem, fill_opacity="0.95", stroke_opacity="0.95", opacity="1.0")
+        else:
+            _set_element_opacity(elem, fill_opacity="0.10", stroke_opacity="0.10", opacity="0.22")
+
+    drew_cluster = False
+    for fill, color_points in grouped.items():
+        cluster_points = [(float(item["x"]), float(item["y"])) for item in color_points]
+        if not cluster_points:
             continue
-        ET.SubElement(
-            overlay,
-            _nstag(ns, "polygon"),
-            {
-                "points": " ".join(f"{x:.6f},{y:.6f}" for x, y in hull),
-                "fill": hull_color,
-                "fill-opacity": "0.02",
-                "stroke": hull_color,
-                "stroke-opacity": "0.96",
-                "stroke-width": "2.2",
-                "stroke-linejoin": "round",
-            },
-        )
+        labels = _dbscan_points(cluster_points, eps=_auto_cluster_eps(cluster_points), min_samples=1)
+        clusters = _group_points_by_label(cluster_points, labels)
+        for cluster in clusters:
+            if not cluster:
+                continue
+            _draw_cluster_outline(overlay, ns, cluster, fill, w, h)
+            drew_cluster = True
+
+    if not drew_cluster:
+        raise ValueError("no clusters found")
 
 
 def _svg_draw_global_peak_crosshairs(
@@ -723,6 +766,53 @@ def _svg_zoom_and_highlight_intersection(
             w,
             h,
         )
+
+
+def _draw_cluster_outline(
+    overlay: ET.Element,
+    ns: str,
+    cluster_points: list[tuple[float, float]],
+    color: str,
+    w: float,
+    h: float,
+) -> None:
+    outline_color = _safe_color(color, "#ff3b30")
+    if len(cluster_points) == 1:
+        x, y = cluster_points[0]
+        _svg_add_point(
+            overlay,
+            ns,
+            {"x": x, "y": y, "radius": 5.0, "color": outline_color, "label": ""},
+            w,
+            h,
+        )
+        return
+    if len(cluster_points) == 2:
+        (x1, y1), (x2, y2) = cluster_points
+        _svg_draw_line(
+            overlay,
+            ns,
+            {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "width": 2.2, "color": outline_color, "label": ""},
+            w,
+            h,
+        )
+        return
+    hull = _convex_hull(cluster_points)
+    if len(hull) < 3:
+        return
+    ET.SubElement(
+        overlay,
+        _nstag(ns, "polygon"),
+        {
+            "points": " ".join(f"{x:.6f},{y:.6f}" for x, y in hull),
+            "fill": outline_color,
+            "fill-opacity": "0.02",
+            "stroke": outline_color,
+            "stroke-opacity": "0.96",
+            "stroke-width": "2.2",
+            "stroke-linejoin": "round",
+        },
+    )
 
 
 def _find_overlay_parent(root: ET.Element, ns: str) -> ET.Element:

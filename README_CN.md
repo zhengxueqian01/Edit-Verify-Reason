@@ -118,9 +118,10 @@ ChartAgent 区分了纯粹的后台执行核心和多轮前端交互层，互不
 - 系统会先生成一次初始回答 `answer_initial`，并读取其中的 `confidence`。
 - 只有当 `answer_initial.confidence` 较低时，才会进入“模型自主选择工具增强图片”阶段，再次生成 `answer_tool_augmented`。
 - `answer_initial.confidence` 现已统一规范到 `0-1` 区间。
-- 当前自动视觉增强工具为 `add_point`、`draw_line`、`highlight_rect`、`isolate_color_topology`、`draw_global_peak_crosshairs`、`zoom_and_highlight_intersection`。
+- 当前自动视觉增强工具为 `add_point`、`draw_line`、`highlight_rect`、`isolate_color_topology`、`isolate_all_color_topologies`、`draw_global_peak_crosshairs`、`zoom_and_highlight_intersection`。
 - `add_text` 已移除。
-- `isolate_color_topology` 面向散点图：会虚化非目标颜色点，并对目标颜色点做 DBSCAN 聚类与凸包圈选。
+- `isolate_color_topology` 面向散点图单色问题：会虚化非目标颜色点，并对目标颜色点做 DBSCAN 聚类与凸包圈选。
+- `isolate_all_color_topologies` 面向散点图全局簇问题：会按颜色分别聚类，并为图中所有颜色的簇绘制凸包圈选。
 - `draw_global_peak_crosshairs` 面向面积图：零参数执行，扫描全局 area 顶点，锁定最高点并绘制水平/垂直十字锚线。
 - `zoom_and_highlight_intersection` 面向折线图：根据 legend 中的 `line_A` / `line_B` 定位两条折线，计算线段交点并注入红色交点标记。
 - 无任何前端侵入式逻辑。
