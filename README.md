@@ -76,7 +76,7 @@ python -m src.run_dataset_via_main \
   --max-render-retries 2
 ```
 
-Records are written under `output/dataset_records/<model>_<task>_<timestamp>/`.
+Records are written under `output/dataset_records/<category>_<task>_<timestamp>/`, for example `task1_add_20260313_153000/`.
 
 ## Validate SVG Match
 
@@ -84,7 +84,7 @@ Run SVG-vs-ground-truth validation separately:
 
 ```bash
 python -m src.validate_svg_matches \
-  --pred-root output/dataset_records/dataset_task2-line_20260303_201506 \
+  --pred-root output/dataset_records/task2_del_20260303_201506 \
   --dataset-dir dataset/task2-line
 ```
 

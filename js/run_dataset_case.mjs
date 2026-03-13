@@ -207,13 +207,23 @@ function synthesizeInstruction(payload) {
   }
 
   const addBlock = typeof change === "object" && change ? change.add : null;
-  if (addBlock && typeof addBlock === "object") {
+  const addBlocks = Array.isArray(addBlock)
+    ? addBlock.filter((item) => item && typeof item === "object")
+    : addBlock && typeof addBlock === "object"
+      ? [addBlock]
+      : [];
+  if (addBlocks.length) {
     const addName = target?.add_category;
-    const values = addBlock?.values;
-    if (Array.isArray(values) && values.length) {
+    const addNames = Array.isArray(addName) ? addName : [addName];
+    for (const [idx, block] of addBlocks.entries()) {
+      const values = block?.values;
+      if (!Array.isArray(values) || !values.length) {
+        continue;
+      }
       const valuesText = values.join(", ");
-      if (typeof addName === "string" && addName.trim()) {
-        parts.push(`新增系列 \"${addName.trim()}\" : [${valuesText}]`);
+      const name = addNames[idx];
+      if (typeof name === "string" && name.trim()) {
+        parts.push(`新增系列 \"${name.trim()}\" : [${valuesText}]`);
       } else {
         parts.push(`新增系列: [${valuesText}]`);
       }

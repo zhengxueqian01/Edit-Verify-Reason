@@ -26,6 +26,21 @@ def update_area_svg(
     svg_output_path: str | None = None,
     llm: Any | None = None,
 ) -> str:
+    add_specs = _extract_multi_add_series_specs(question)
+    if len(add_specs) > 1:
+        add_question = "；".join(
+            _build_add_series_clause(spec["label"], spec["values"]) for spec in add_specs
+        )
+        return _run_area_ops_sequence(
+            svg_path=svg_path,
+            question=add_question,
+            mapping_info=mapping_info,
+            ops=["add"] * len(add_specs),
+            output_path=output_path,
+            svg_output_path=svg_output_path,
+            llm=llm,
+        )
+
     ops = _resolve_area_ops(question)
     if len(ops) > 1:
         return _run_area_ops_sequence(
@@ -304,11 +319,25 @@ def _update_area_remove_series(
 
     legend, legend_items = _extract_legend_items(root, content)
     labels = [item["label"] for item in legend_items if item.get("label")]
-    label = _match_label_with_llm(question, labels, llm) if llm is not None else None
-    if not label and llm is None:
-        label = _match_label(question, labels)
-    if not label:
+    matched_labels = _match_labels(question, labels)
+    if not matched_labels and llm is not None:
+        label = _match_label_with_llm(question, labels, llm)
+        if label:
+            matched_labels = [label]
+    if not matched_labels:
         raise ValueError("No matching area series found in question.")
+    if len(matched_labels) > 1:
+        delete_question = "；".join(f'删除类别 "{label}"' for label in matched_labels)
+        return _run_area_ops_sequence(
+            svg_path=svg_path,
+            question=delete_question,
+            mapping_info=mapping_info,
+            ops=["delete"] * len(matched_labels),
+            output_path=output_path,
+            svg_output_path=svg_output_path,
+            llm=llm,
+        )
+    label = matched_labels[0]
 
     target_fill = None
     for item in legend_items:
@@ -458,7 +487,8 @@ def _parse_values(question: str, llm: Any | None) -> tuple[list[float], dict[str
         values, meta = result
         if values:
             return values, meta
-    return [], {"llm_used": True, "llm_success": False}
+    values = _parse_with_regex(question)
+    return values, {"llm_used": True, "llm_success": False}
 
 
 def _has_year_update(question: str) -> bool:
@@ -629,11 +659,17 @@ def _has_delete_intent(question: str) -> bool:
 
 
 def _match_label(question: str, labels: list[str]) -> str | None:
+    matches = _match_labels(question, labels)
+    return matches[0] if matches else None
+
+
+def _match_labels(question: str, labels: list[str]) -> list[str]:
     lowered = question.lower()
+    matches: list[str] = []
     for label in labels:
-        if label.lower() in lowered:
-            return label
-    return None
+        if label.lower() in lowered and label not in matches:
+            matches.append(label)
+    return matches
 
 
 def _match_label_with_llm(question: str, labels: list[str], llm: Any) -> str | None:
@@ -711,6 +747,33 @@ def _extract_series_label(question: str) -> str | None:
             cleaned = remainder
         cleaned = cleaned.strip(" -:")
     return cleaned or None
+
+
+def _extract_multi_add_series_specs(question: str) -> list[dict[str, Any]]:
+    clauses = [c.strip() for c in re.split(r"[；;\n]+", question) if c.strip()]
+    specs: list[dict[str, Any]] = []
+    for clause in clauses:
+        values = _parse_with_regex(clause)
+        if not values:
+            continue
+        label = _extract_series_label(clause)
+        if not label:
+            continue
+        specs.append({"label": label, "values": values})
+    return specs
+
+
+def _build_add_series_clause(label: str | None, values: list[float]) -> str:
+    values_text = ", ".join(_format_series_value(value) for value in values)
+    if label:
+        return f'新增系列 "{label}" : [{values_text}]'
+    return f"新增系列: [{values_text}]"
+
+
+def _format_series_value(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def _parse_update_with_llm(

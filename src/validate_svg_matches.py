@@ -19,6 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATASET_ROOT = PROJECT_ROOT / "dataset"
 PREDICTION_ROOT = PROJECT_ROOT / "output" / "dataset_records"
 SVG_MATCH_ROOT = PROJECT_ROOT / "output" / "svg_match"
+LOW_SCORE_THRESHOLD = 0.95
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,8 +104,91 @@ def validate_one(pred_svg: Path, gt_svg: Path) -> dict[str, Any]:
     return compare_svgs(pred_svg, gt_svg)
 
 
+def _normalize_category_names(payload: dict[str, Any]) -> list[str]:
+    operation_target = payload.get("operation_target")
+    if not isinstance(operation_target, dict):
+        return []
+
+    raw = operation_target.get("category_name")
+    if isinstance(raw, str):
+        return [raw] if raw.strip() else []
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return []
+
+
+def _score_distribution(scores: list[float]) -> dict[str, int]:
+    bands = {
+        "eq_1_0": 0,
+        "0_99_to_1_0": 0,
+        "0_95_to_0_99": 0,
+        "0_90_to_0_95": 0,
+        "0_80_to_0_90": 0,
+        "below_0_80": 0,
+    }
+    for score in scores:
+        if score >= 1.0:
+            bands["eq_1_0"] += 1
+        elif score >= 0.99:
+            bands["0_99_to_1_0"] += 1
+        elif score >= 0.95:
+            bands["0_95_to_0_99"] += 1
+        elif score >= 0.90:
+            bands["0_90_to_0_95"] += 1
+        elif score >= 0.80:
+            bands["0_80_to_0_90"] += 1
+        else:
+            bands["below_0_80"] += 1
+    return bands
+
+
+def _score_summary(scores: list[float]) -> dict[str, Any]:
+    if not scores:
+        return {
+            "count": 0,
+            "min": None,
+            "p25": None,
+            "median": None,
+            "p75": None,
+            "max": None,
+        }
+
+    ordered = sorted(scores)
+
+    def percentile(p: float) -> float:
+        if len(ordered) == 1:
+            return ordered[0]
+        idx = (len(ordered) - 1) * p
+        lo = int(idx)
+        hi = min(lo + 1, len(ordered) - 1)
+        if lo == hi:
+            return ordered[lo]
+        frac = idx - lo
+        return ordered[lo] * (1 - frac) + ordered[hi] * frac
+
+    return {
+        "count": len(ordered),
+        "min": round(ordered[0], 4),
+        "p25": round(percentile(0.25), 4),
+        "median": round(percentile(0.5), 4),
+        "p75": round(percentile(0.75), 4),
+        "max": round(ordered[-1], 4),
+    }
+
+
+def _exact_score_counts(scores: list[float]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for score in sorted(scores):
+        key = f"{score:.4f}"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def validate_batch(pred_root: Path, dataset_dir: Path, limit: int) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
+    low_score_items: list[dict[str, Any]] = []
+    low_score_categories: dict[str, dict[str, Any]] = {}
+    scores: list[float] = []
     total = 0
     compared = 0
     score_sum = 0.0
@@ -134,6 +218,12 @@ def validate_batch(pred_root: Path, dataset_dir: Path, limit: int) -> dict[str, 
 
         payload_path = dataset_case_dir / f"{case_id}.json"
         payload = load_json(payload_path) if payload_path.exists() else {}
+        category_names = _normalize_category_names(payload)
+        operation = str(payload.get("operation") or "").strip() or None
+        if operation:
+            item["operation"] = operation
+        if category_names:
+            item["category_names"] = category_names
         gt_svg = resolve_ground_truth_svg(dataset_case_dir, case_id, payload)
         if gt_svg is None:
             missing_gt += 1
@@ -145,10 +235,51 @@ def validate_batch(pred_root: Path, dataset_dir: Path, limit: int) -> dict[str, 
         item.update(result)
         if result.get("ok"):
             compared += 1
-            score_sum += float(result.get("score") or 0.0)
+            score = float(result.get("score") or 0.0)
+            score_sum += score
+            scores.append(score)
+            if score < LOW_SCORE_THRESHOLD:
+                low_score_case = {
+                    "case": case_id,
+                    "score": round(score, 4),
+                    "chart_type": result.get("chart_type"),
+                    "operation": operation,
+                    "category_names": category_names,
+                    "predicted_svg_path": result.get("predicted_svg_path"),
+                    "ground_truth_svg_path": result.get("ground_truth_svg_path"),
+                }
+                low_score_items.append(low_score_case)
+                for category_name in category_names:
+                    category_entry = low_score_categories.setdefault(
+                        category_name,
+                        {
+                            "category_name": category_name,
+                            "count": 0,
+                            "cases": [],
+                            "scores": [],
+                        },
+                    )
+                    category_entry["count"] += 1
+                    category_entry["cases"].append(case_id)
+                    category_entry["scores"].append(score)
         else:
             failed += 1
         items.append(item)
+
+    low_score_categories_list = sorted(
+        (
+            {
+                "category_name": item["category_name"],
+                "count": item["count"],
+                "cases": item["cases"],
+                "average_score": round(sum(item["scores"]) / len(item["scores"]), 4),
+                "min_score": round(min(item["scores"]), 4),
+            }
+            for item in low_score_categories.values()
+        ),
+        key=lambda item: (item["average_score"], item["category_name"]),
+    )
+    low_score_items.sort(key=lambda item: (item["score"], item["case"]))
 
     return {
         "mode": "batch",
@@ -160,6 +291,13 @@ def validate_batch(pred_root: Path, dataset_dir: Path, limit: int) -> dict[str, 
         "missing_gt": missing_gt,
         "failed": failed,
         "average_score": (score_sum / compared if compared else None),
+        "score_summary": _score_summary(scores),
+        "score_distribution": _score_distribution(scores),
+        "exact_score_counts": _exact_score_counts(scores),
+        "low_score_threshold": LOW_SCORE_THRESHOLD,
+        "low_score_case_count": len(low_score_items),
+        "low_score_cases": low_score_items,
+        "low_score_categories": low_score_categories_list,
         "items": items,
     }
 

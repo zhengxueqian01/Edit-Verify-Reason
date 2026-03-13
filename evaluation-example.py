@@ -61,7 +61,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0, help="Max samples to test; 0 for all.")
     parser.add_argument("--model", default="gpt-5.2")
     parser.add_argument("--base-url", default="https://aihubmix.com/v1")
-    parser.add_argument("--data-dir", default="task1-mix-area/add-change/data")
+    parser.add_argument("--data-dir", default="task1-mix-area/add-change")
     parser.add_argument("--out", default="add_change_results.txt")
     parser.add_argument("--image-suffix", default=".png")
     parser.add_argument("--sleep", type=float, default=0.0, help="Sleep seconds per request.")

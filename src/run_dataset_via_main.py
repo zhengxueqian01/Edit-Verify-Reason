@@ -16,7 +16,6 @@ if PROJECT_SRC not in sys.path:
     sys.path.insert(0, PROJECT_SRC)
 
 from main import run_main
-from chart_agent.config import get_task_model_config
 from chart_agent.perception.svg_renderer import default_output_paths
 
 
@@ -59,6 +58,30 @@ def resolve_input_dir(raw: str) -> Path:
     return (DATASET_ROOT / raw).resolve()
 
 
+def build_run_dir_name(input_dir: Path) -> str:
+    try:
+        rel = input_dir.resolve().relative_to(DATASET_ROOT.resolve())
+        parts = list(rel.parts)
+    except Exception:
+        parts = [input_dir.name]
+
+    if not parts:
+        prefix = "dataset_run"
+    elif len(parts) == 1:
+        first = parts[0].strip() or "dataset"
+        category = first.split("-", 1)[0] or first
+        task = first.split("-", 1)[1] if "-" in first else first
+        prefix = f"{category}_{task}"
+    else:
+        first = parts[0].strip() or "dataset"
+        category = first.split("-", 1)[0] or first
+        task = parts[-1].strip() or "run"
+        prefix = f"{category}_{task}"
+    prefix = re.sub(r"[^A-Za-z0-9_-]+", "_", prefix).strip("_") or "dataset_run"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{prefix}_{stamp}"
+
+
 def load_json(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
@@ -77,6 +100,17 @@ def choose_qa(payload: dict[str, Any], qa_index: int) -> tuple[str, Any]:
     if q:
         return q, payload.get("answer")
     raise ValueError("No question found in JSON.")
+
+
+def build_structured_update_context(payload: dict[str, Any]) -> dict[str, Any]:
+    target = payload.get("operation_target")
+    data_change = payload.get("data_change")
+    return {
+        "chart_type": str(payload.get("chart_type") or "").strip().lower(),
+        "operation": str(payload.get("operation") or "").strip().lower(),
+        "operation_target": target if isinstance(target, dict) else {},
+        "data_change": data_change if isinstance(data_change, dict) else {},
+    }
 
 
 def list_case_dirs(input_dir: Path) -> list[Path]:
@@ -107,6 +141,35 @@ def extract_answer_text_by_key(result: dict[str, Any], key: str) -> str:
     if isinstance(value, str):
         return value.strip()
     return ""
+
+
+def extract_answer_payload(result: dict[str, Any], key: str) -> dict[str, Any] | None:
+    value = result.get(key)
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return {"answer": value}
+    return None
+
+
+def format_answer_section(
+    *,
+    title: str,
+    payload: dict[str, Any] | None,
+    answer_text: str,
+    matched: bool | None,
+) -> list[str]:
+    lines = [f"=== {title} ==="]
+    lines.append(f"Answer Text: {answer_text}" if answer_text else "Answer Text: ")
+    if matched is not None:
+        lines.append(f"Match: {matched}")
+    if payload is None:
+        lines.append("Model Output: null")
+    else:
+        lines.append("Model Output:")
+        lines.append(json.dumps(payload, ensure_ascii=False, indent=2))
+    lines.append("")
+    return lines
 
 
 def _extract_years(text: str) -> list[str]:
@@ -188,34 +251,24 @@ def main() -> None:
     if not case_dirs:
         raise SystemExit(f"No valid case folders found under: {input_dir}")
 
-    parent_name = input_dir.parent.name.strip() if input_dir.parent else ""
-    child_name = input_dir.name.strip() or "dataset_run"
-    if parent_name == "dataset":
-        try:
-            parent_name = get_task_model_config("answer").name
-        except Exception:
-            parent_name = "answer"
-    if parent_name:
-        rel_name = f"{parent_name}_{child_name}"
-    else:
-        rel_name = child_name
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     record_root = Path(args.record_root)
     if not record_root.is_absolute():
         record_root = PROJECT_ROOT / record_root
-    run_dir = record_root / f"{rel_name}_{stamp}"
+    run_dir = record_root / build_run_dir_name(input_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     summary: list[dict[str, Any]] = []
     total = 0
     success = 0
     failed = 0
-    answer_evaluated = 0
-    answer_matched = 0
+    answer_modified_evaluated = 0
+    answer_modified_matched = 0
     answer_original_evaluated = 0
     answer_original_matched = 0
-    answer_initial_evaluated = 0
-    answer_initial_matched = 0
+    answer_tool_aug_evaluated = 0
+    answer_tool_aug_matched = 0
+    answer_effective_evaluated = 0
+    answer_effective_matched = 0
 
     for case_dir in case_dirs:
         if args.limit and total >= args.limit:
@@ -231,21 +284,24 @@ def main() -> None:
         payload = load_json(json_path)
         qa_question, expected_answer = choose_qa(payload, args.qa_index)
         split_update_question = ""
+        chart_type_hint = str(payload.get("chart_type") or "").strip().lower() or None
+        structured_update_context = build_structured_update_context(payload)
 
         result: dict[str, Any]
         err = ""
         try:
             result = run_main(
                 {
-                    # Always pass the original QA sentence and let run_main split it into
-                    # update_question / qa_question with the splitter model.
                     "question": qa_question,
                     "max_render_retries": args.max_render_retries,
                     "svg_path": str(svg_path),
+                    "image_path": str(image_path) if image_path.exists() else None,
+                    "chart_type_hint": chart_type_hint,
+                    "structured_update_context": structured_update_context,
                     "text_spec": None,
                 }
             )
-            split_update_question = str(result.get("update_question") or "")
+            split_update_question = str(result.get("update_question") or split_update_question)
             result["case"] = case_id
             result["case_dir"] = str(case_dir)
             result["json_path"] = str(json_path)
@@ -279,61 +335,70 @@ def main() -> None:
                         shutil.copy2(aug_path, aug_target)
                         result["record_tool_aug_image_path"] = str(aug_target)
 
-            answer_initial_text = extract_answer_text_by_key(result, "answer_initial")
-            answer_initial_match = is_answer_match(expected_answer, answer_initial_text)
             answer_original_text = extract_answer_text_by_key(result, "answer_original")
             answer_original_match = is_answer_match(expected_answer, answer_original_text)
-            answer_tool_aug_text = extract_answer_text(result)
-            answer_tool_aug_match = is_answer_match(expected_answer, answer_tool_aug_text)
-            answer_evaluated += 1
-            if answer_tool_aug_match:
-                answer_matched += 1
+            answer_modified_text = extract_answer_text_by_key(result, "answer_initial")
+            answer_modified_match = is_answer_match(expected_answer, answer_modified_text)
+            answer_tool_aug_payload = extract_answer_payload(result, "answer_tool_augmented")
+            answer_tool_aug_text = extract_answer_text_by_key(result, "answer_tool_augmented")
+            answer_tool_aug_match = (
+                is_answer_match(expected_answer, answer_tool_aug_text) if answer_tool_aug_payload else None
+            )
             answer_original_evaluated += 1
             if answer_original_match:
                 answer_original_matched += 1
-            answer_initial_evaluated += 1
-            if answer_initial_match:
-                answer_initial_matched += 1
+            answer_modified_evaluated += 1
+            if answer_modified_match:
+                answer_modified_matched += 1
+            if answer_tool_aug_payload is not None:
+                answer_tool_aug_evaluated += 1
+                if answer_tool_aug_match:
+                    answer_tool_aug_matched += 1
+                answer_effective_evaluated += 1
+                if answer_tool_aug_match:
+                    answer_effective_matched += 1
+            else:
+                answer_effective_evaluated += 1
+                if answer_modified_match:
+                    answer_effective_matched += 1
             answer_lines = [
                 f"Question: {qa_question}",
+                f"Update Question: {split_update_question}",
                 f"Expected: {expected_answer}",
-                f"Original Image Answer: {answer_original_text}",
-                f"Original Image Match: {answer_original_match}",
-                f"Initial Answer: {answer_initial_text}",
-                f"Initial Match: {answer_initial_match}",
-                f"Tool Augmented Answer: {answer_tool_aug_text}",
-                f"Tool Augmented Match: {answer_tool_aug_match}",
                 "",
-                "=== Prompt: answer_original ===",
-                str(((result.get("answer_original") or {}).get("prompt")) if isinstance(result.get("answer_original"), dict) else ""),
-                "",
-                "=== Prompt: answer_initial ===",
-                str(((result.get("answer_initial") or {}).get("prompt")) if isinstance(result.get("answer_initial"), dict) else ""),
-                "",
-                "=== Prompt: answer_tool_augmented ===",
-                str(((result.get("answer_tool_augmented") or {}).get("prompt")) if isinstance(result.get("answer_tool_augmented"), dict) else ""),
-                "",
-                "=== LLM Raw: answer_original ===",
-                str(((result.get("answer_original") or {}).get("llm_raw")) if isinstance(result.get("answer_original"), dict) else ""),
-                "",
-                "=== LLM Raw: answer_initial ===",
-                str(((result.get("answer_initial") or {}).get("llm_raw")) if isinstance(result.get("answer_initial"), dict) else ""),
-                "",
-                "=== LLM Raw: answer_tool_augmented ===",
-                str(((result.get("answer_tool_augmented") or {}).get("llm_raw")) if isinstance(result.get("answer_tool_augmented"), dict) else ""),
-                "",
-                "=== LLM Raw: answer(final) ===",
-                str(((result.get("answer") or {}).get("llm_raw")) if isinstance(result.get("answer"), dict) else ""),
-                "",
-                "=== LLM Raw: tool_planner ===",
-                str(
-                    (
-                        ((result.get("tool_phase") or {}).get("planner") or {}).get("llm_raw")
-                        if isinstance(result.get("tool_phase"), dict)
-                        else ""
-                    )
-                ),
             ]
+            answer_lines.extend(
+                format_answer_section(
+                    title="Original Image Answer",
+                    payload=extract_answer_payload(result, "answer_original"),
+                    answer_text=answer_original_text,
+                    matched=answer_original_match,
+                )
+            )
+            answer_lines.extend(
+                format_answer_section(
+                    title="Modified Image Answer",
+                    payload=extract_answer_payload(result, "answer_initial"),
+                    answer_text=answer_modified_text,
+                    matched=answer_modified_match,
+                )
+            )
+            answer_lines.extend(
+                format_answer_section(
+                    title="Visual Tool Answer",
+                    payload=answer_tool_aug_payload,
+                    answer_text=answer_tool_aug_text,
+                    matched=answer_tool_aug_match,
+                )
+            )
+            tool_phase = result.get("tool_phase") if isinstance(result.get("tool_phase"), dict) else None
+            answer_lines.extend(
+                [
+                    "=== Tool Phase ===",
+                    json.dumps(tool_phase, ensure_ascii=False, indent=2) if tool_phase is not None else "null",
+                    "",
+                ]
+            )
             (case_out_dir / "answer.txt").write_text("\n".join(answer_lines) + "\n", encoding="utf-8")
             (case_out_dir / "result.json").write_text(
                 json.dumps(result, ensure_ascii=False, indent=2),
@@ -365,14 +430,28 @@ def main() -> None:
                     if not err
                     else False
                 ),
-                "answer_initial": (extract_answer_text_by_key(result, "answer_initial") if not err else ""),
-                "answer_initial_match": (
+                "answer_modified": (extract_answer_text_by_key(result, "answer_initial") if not err else ""),
+                "answer_modified_match": (
                     is_answer_match(expected_answer, extract_answer_text_by_key(result, "answer_initial"))
                     if not err
                     else False
                 ),
-                "answer": extract_answer_text(result) if not err else "",
-                "answer_match": (is_answer_match(expected_answer, extract_answer_text(result)) if not err else False),
+                "answer_tool_augmented": (
+                    extract_answer_text_by_key(result, "answer_tool_augmented") if not err else ""
+                ),
+                "answer_tool_augmented_match": (
+                    (
+                        is_answer_match(expected_answer, extract_answer_text_by_key(result, "answer_tool_augmented"))
+                        if extract_answer_payload(result, "answer_tool_augmented") is not None
+                        else False
+                    )
+                    if not err
+                    else False
+                ),
+                "answer_final": extract_answer_text(result) if not err else "",
+                "answer_final_match": (
+                    is_answer_match(expected_answer, extract_answer_text(result)) if not err else False
+                ),
                 "record_dir": str(case_out_dir),
                 "error": err,
             }
@@ -391,23 +470,68 @@ def main() -> None:
         "answer_original_accuracy": (
             answer_original_matched / answer_original_evaluated if answer_original_evaluated else 0.0
         ),
-        "answer_initial_evaluated": answer_initial_evaluated,
-        "answer_initial_matched": answer_initial_matched,
-        "answer_initial_accuracy": (
-            answer_initial_matched / answer_initial_evaluated if answer_initial_evaluated else 0.0
+        "answer_modified_evaluated": answer_modified_evaluated,
+        "answer_modified_matched": answer_modified_matched,
+        "answer_modified_accuracy": (
+            answer_modified_matched / answer_modified_evaluated if answer_modified_evaluated else 0.0
         ),
-        "answer_evaluated": answer_evaluated,
-        "answer_matched": answer_matched,
-        "answer_accuracy": (answer_matched / answer_evaluated if answer_evaluated else 0.0),
-        "answer_tool_aug_evaluated": answer_evaluated,
-        "answer_tool_aug_matched": answer_matched,
-        "answer_tool_aug_accuracy": (answer_matched / answer_evaluated if answer_evaluated else 0.0),
+        "answer_tool_aug_evaluated": answer_tool_aug_evaluated,
+        "answer_tool_aug_matched": answer_tool_aug_matched,
+        "answer_tool_aug_accuracy": (
+            answer_tool_aug_matched / answer_tool_aug_evaluated if answer_tool_aug_evaluated else 0.0
+        ),
+        "answer_effective_evaluated": answer_effective_evaluated,
+        "answer_effective_matched": answer_effective_matched,
+        "answer_effective_accuracy": (
+            answer_effective_matched / answer_effective_evaluated if answer_effective_evaluated else 0.0
+        ),
         "items": summary,
     }
     (run_dir / "summary.json").write_text(
         json.dumps(summary_payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    summary_lines = [
+        f"Input Dir: {input_dir}",
+        f"Run Dir: {run_dir}",
+        f"Total: {total}",
+        f"Success: {success}",
+        f"Failed: {failed}",
+        "",
+        "Accuracy",
+        (
+            f"Original Image Answer: {answer_original_matched}/{answer_original_evaluated} "
+            f"= {summary_payload['answer_original_accuracy']:.4f}"
+        ),
+        (
+            f"Modified Image Answer: {answer_modified_matched}/{answer_modified_evaluated} "
+            f"= {summary_payload['answer_modified_accuracy']:.4f}"
+        ),
+        (
+            f"Visual Tool Answer: {answer_tool_aug_matched}/{answer_tool_aug_evaluated} "
+            f"= {summary_payload['answer_tool_aug_accuracy']:.4f}"
+        ),
+        (
+            f"Effective Answer: {answer_effective_matched}/{answer_effective_evaluated} "
+            f"= {summary_payload['answer_effective_accuracy']:.4f}"
+        ),
+        "",
+        "Cases",
+    ]
+    for item in summary:
+        summary_lines.append(
+            " | ".join(
+                [
+                    str(item.get("case") or ""),
+                    f"ok={item.get('ok')}",
+                    f"original={item.get('answer_original_match')}",
+                    f"modified={item.get('answer_modified_match')}",
+                    f"tool={item.get('answer_tool_augmented_match')}",
+                    f"dir={item.get('record_dir')}",
+                ]
+            )
+        )
+    (run_dir / "summary.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
     print(json.dumps(summary_payload, ensure_ascii=False, indent=2))
 
 

@@ -52,7 +52,15 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
     answer_llm = make_llm(get_task_model_config("answer"))
     tool_planner_llm = make_llm(get_task_model_config("tool_planner"))
     update_question, qa_question, split_info = _resolve_questions(inputs, splitter_llm)
-    original_combined_question = f"{update_question}. {qa_question}".strip()
+    structured_context = _normalize_structured_context(inputs.get("structured_update_context"))
+    update_question = _enrich_update_question(
+        update_question=update_question,
+        structured_context=structured_context,
+    )
+    original_combined_question = _build_combined_qa_question(
+        update_question=update_question,
+        qa_question=qa_question,
+    )
     original_image_path = _resolve_original_image_path(inputs)
     original_chart_type = str(inputs.get("chart_type_hint") or "unknown").strip().lower() or "unknown"
     answer_original_input = {
@@ -102,7 +110,9 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
         last_operation_plan = operation_plan
         normalized_question = str(operation_plan.get("normalized_question") or planned_question)
         planned_question = _choose_planned_question(planned_question, normalized_question)
-        if not operation_plan.get("llm_success"):
+        plan_steps = _operation_steps_from_plan(operation_plan, planned_question, structured_context)
+        has_executable_plan = bool(plan_steps)
+        if not operation_plan.get("llm_success") and not has_executable_plan:
             render_check = {
                 "ok": False,
                 "confidence": 0.0,
@@ -131,6 +141,7 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
                 inputs=inputs,
                 planned_question=planned_question,
                 operation_plan=operation_plan,
+                structured_context=structured_context,
                 chart_type=chart_type,
                 llm=executor_llm,
                 used_scatter_points=used_scatter_points,
@@ -353,6 +364,10 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
     cand_update = str(split_payload.get("update_question") or "").strip()
     cand_qa = str(split_payload.get("qa_question") or "").strip()
     llm_success = bool(split_payload.get("llm_success"))
+    if not (cand_update and cand_qa):
+        heuristic_update, heuristic_qa = _heuristic_split_update_and_qa(split_source)
+        cand_update = cand_update or heuristic_update
+        cand_qa = cand_qa or heuristic_qa
     split_info = {
         "used": llm_success and bool(cand_update or cand_qa),
         "reason": "llm_split",
@@ -366,6 +381,96 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
     if not llm_success:
         split_info["reason"] = "llm_split_failed_fallback"
     return update_question, qa_question, split_info
+
+
+def _heuristic_split_update_and_qa(question: str) -> tuple[str, str]:
+    text = (question or "").strip()
+    if not text:
+        return "", ""
+    match = re.match(r"^(?:after|once|when)\s+(.+?),\s*(.+)$", text, flags=re.IGNORECASE)
+    if not match:
+        return "", ""
+    raw_update = match.group(1).strip()
+    qa_question = match.group(2).strip()
+    update_question = _normalize_gerund_clause(raw_update)
+    return update_question, qa_question
+
+
+def _normalize_gerund_clause(text: str) -> str:
+    cleaned = (text or "").strip().rstrip(".")
+    replacements = {
+        "adding ": "Add ",
+        "deleting ": "Delete ",
+        "removing ": "Remove ",
+        "changing ": "Change ",
+        "updating ": "Update ",
+        "applying ": "Apply ",
+    }
+    lowered = cleaned.lower()
+    for prefix, replacement in replacements.items():
+        if lowered.startswith(prefix):
+            cleaned = replacement + cleaned[len(prefix):]
+            break
+    return cleaned if cleaned.endswith("?") else f"{cleaned}."
+
+
+def _enrich_update_question(
+    *,
+    update_question: str,
+    structured_context: Any,
+) -> str:
+    parts = [f"Operation: {(update_question or '').strip()}"]
+    operation_target_text, data_change_text = _format_structured_update_context(structured_context)
+    if operation_target_text:
+        parts.append(f"Operation target: {operation_target_text}")
+    if data_change_text:
+        parts.append(f"Data change: {data_change_text}")
+    return "\n".join(part for part in parts if part.strip())
+
+
+def _build_combined_qa_question(*, update_question: str, qa_question: str) -> str:
+    update_text = (update_question or "").strip()
+    qa_text = (qa_question or "").strip()
+    if update_text and qa_text:
+        return f"{update_text}. {qa_text}".strip()
+    return update_text or qa_text
+
+
+def _normalize_structured_context(structured_context: Any) -> dict[str, Any]:
+    if not isinstance(structured_context, dict):
+        return {}
+    out: dict[str, Any] = {}
+    chart_type = str(structured_context.get("chart_type") or "").strip().lower()
+    operation = str(structured_context.get("operation") or "").strip().lower()
+    operation_target = structured_context.get("operation_target")
+    data_change = structured_context.get("data_change")
+    if chart_type:
+        out["chart_type"] = chart_type
+    if operation:
+        out["operation"] = operation
+    out["operation_target"] = operation_target if isinstance(operation_target, dict) else {}
+    out["data_change"] = data_change if isinstance(data_change, dict) else {}
+    return out
+
+
+def _format_structured_update_context(structured_context: Any) -> tuple[str, str]:
+    if not isinstance(structured_context, dict):
+        return "", ""
+    operation_target = structured_context.get("operation_target")
+    data_change = structured_context.get("data_change")
+    operation_target_text = ""
+    data_change_text = ""
+    if operation_target:
+        try:
+            operation_target_text = json.dumps(operation_target, ensure_ascii=False)
+        except TypeError:
+            operation_target_text = str(operation_target)
+    if data_change:
+        try:
+            data_change_text = json.dumps(data_change, ensure_ascii=False)
+        except TypeError:
+            data_change_text = str(data_change)
+    return operation_target_text, data_change_text
 
 
 def _resolve_original_image_path(inputs: dict[str, Any]) -> str | None:
@@ -418,20 +523,23 @@ def _llm_plan_update(question: str, chart_type: str, llm: Any, retry_hint: str =
         "Return JSON only with keys:\n"
         "- operation: one of add|delete|change|unknown\n"
         "- normalized_question: concise imperative update instruction in English\n"
-        "- steps: array of step objects in execution order; each step has operation and question fields\n"
+        "- steps: array of step objects in execution order; each step has operation and optional question_hint fields\n"
         "- new_points: list of {x:number,y:number} (required for scatter add, else empty list)\n"
         f"- retry_hint: {retry_hint or 'none'}\n"
+        "Rules:\n"
+        "- Do not rewrite or summarize structured data payloads.\n"
+        "- question_hint is only a short execution hint, not the source of truth for values.\n"
         "Question:\n"
         f"{question}"
     )
     try:
         response = llm.invoke(prompt)
     except Exception:
-        return {"operation": "unknown", "normalized_question": question, "new_points": [], "llm_success": False}
+        return _heuristic_plan_update(question)
     content = getattr(response, "content", "")
     payload = _safe_json_loads(content)
     if not payload:
-        return {"operation": "unknown", "normalized_question": question, "new_points": [], "llm_success": False}
+        return _heuristic_plan_update(question)
 
     op = str(payload.get("operation", "unknown")).lower()
     if op not in {"add", "delete", "change", "unknown"}:
@@ -446,6 +554,25 @@ def _llm_plan_update(question: str, chart_type: str, llm: Any, retry_hint: str =
         "new_points": points,
         "llm_success": True,
         "llm_raw": content,
+    }
+
+
+def _heuristic_plan_update(question: str) -> dict[str, Any]:
+    normalized = (question or "").strip()
+    op = "unknown"
+    lowered = normalized.lower()
+    if re.search(r"\b(delete|remove|drop)\b", lowered):
+        op = "delete"
+    elif re.search(r"\b(change|update|modify|set)\b", lowered):
+        op = "change"
+    elif re.search(r"\b(add|append|insert)\b", lowered):
+        op = "add"
+    return {
+        "operation": op,
+        "normalized_question": normalized,
+        "steps": [{"operation": op, "question": normalized, "new_points": []}] if normalized else [],
+        "new_points": [],
+        "llm_success": False,
     }
 
 
@@ -468,11 +595,11 @@ def _llm_split_update_and_qa(question: str, llm: Any) -> dict[str, Any]:
     try:
         response = llm.invoke(prompt)
     except Exception:
-        return {"update_question": question, "qa_question": question, "llm_success": False}
+        return {"update_question": "", "qa_question": "", "llm_success": False}
     content = getattr(response, "content", "")
     payload = _safe_json_loads(content)
     if not payload:
-        return {"update_question": question, "qa_question": question, "llm_success": False}
+        return {"update_question": "", "qa_question": "", "llm_success": False}
     update_q = str(payload.get("update_question") or "").strip()
     qa_q = str(payload.get("qa_question") or "").strip()
     return {
@@ -551,14 +678,29 @@ def _coerce_steps(raw: Any) -> list[dict[str, Any]]:
         if op not in {"add", "delete", "change", "unknown"}:
             op = "unknown"
         question = str(item.get("question") or "").strip()
+        question_hint = str(item.get("question_hint") or question).strip()
         points = _coerce_points(item.get("new_points", []))
-        if not question:
+        if not question_hint and not points:
             continue
-        out.append({"operation": op, "question": question, "new_points": points})
+        out.append(
+            {
+                "operation": op,
+                "question": question,
+                "question_hint": question_hint,
+                "new_points": points,
+            }
+        )
     return out
 
 
-def _operation_steps_from_plan(operation_plan: dict[str, Any], planned_question: str) -> list[dict[str, Any]]:
+def _operation_steps_from_plan(
+    operation_plan: dict[str, Any],
+    planned_question: str,
+    structured_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    structured_steps = _build_structured_steps(structured_context, operation_plan)
+    if structured_steps:
+        return structured_steps
     steps = operation_plan.get("steps", [])
     if isinstance(steps, list) and steps:
         return steps
@@ -566,9 +708,206 @@ def _operation_steps_from_plan(operation_plan: dict[str, Any], planned_question:
         {
             "operation": str(operation_plan.get("operation") or "unknown"),
             "question": planned_question,
+            "question_hint": planned_question,
             "new_points": operation_plan.get("new_points", []),
         }
     ]
+
+
+def _build_structured_steps(
+    structured_context: dict[str, Any],
+    operation_plan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not structured_context:
+        return []
+
+    operation = str(structured_context.get("operation") or "").strip().lower()
+    operation_target = structured_context.get("operation_target")
+    data_change = structured_context.get("data_change")
+    if not isinstance(operation_target, dict):
+        operation_target = {}
+    if not isinstance(data_change, dict):
+        data_change = {}
+
+    plan_steps = operation_plan.get("steps", [])
+    op_to_hints: dict[str, list[str]] = {}
+    if isinstance(plan_steps, list):
+        for step in plan_steps:
+            if not isinstance(step, dict):
+                continue
+            step_op = str(step.get("operation") or "").strip().lower()
+            if step_op not in {"add", "delete", "change"}:
+                continue
+            hint = str(step.get("question_hint") or step.get("question") or "").strip()
+            if hint:
+                op_to_hints.setdefault(step_op, []).append(hint)
+
+    steps: list[dict[str, Any]] = []
+    ordered_ops = [part.strip() for part in operation.split("+") if part.strip()] or [operation]
+    for op in ordered_ops:
+        if op in {"del", "delete"}:
+            labels = _structured_delete_labels(operation_target)
+            if labels:
+                for idx, label in enumerate(labels):
+                    steps.append(
+                        {
+                            "operation": "delete",
+                            "operation_target": {"category_name": label},
+                            "data_change": {},
+                            "question_hint": _pick_hint(op_to_hints, "delete", idx),
+                            "new_points": [],
+                        }
+                    )
+                continue
+        if op == "add":
+            add_target, add_change = _structured_add_payload(operation_target, data_change)
+            if add_target or add_change:
+                steps.append(
+                    {
+                        "operation": "add",
+                        "operation_target": add_target,
+                        "data_change": add_change,
+                        "question_hint": _pick_hint(op_to_hints, "add", len(steps)),
+                        "new_points": _points_from_data_change(add_change),
+                    }
+                )
+                continue
+        if op == "change":
+            change_steps = _structured_change_steps(operation_target, data_change, op_to_hints.get("change", []))
+            if change_steps:
+                steps.extend(change_steps)
+                continue
+    return steps
+
+
+def _pick_hint(op_to_hints: dict[str, list[str]], op: str, idx: int) -> str:
+    hints = op_to_hints.get(op, [])
+    if not hints:
+        return ""
+    if idx < len(hints):
+        return hints[idx]
+    return hints[-1]
+
+
+def _structured_delete_labels(operation_target: dict[str, Any]) -> list[str]:
+    candidates = (
+        operation_target.get("category_name"),
+        operation_target.get("category_names"),
+    )
+    labels: list[str] = []
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            labels.append(value.strip())
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    labels.append(item.strip())
+    return labels
+
+
+def _structured_add_payload(
+    operation_target: dict[str, Any],
+    data_change: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    add_change = data_change.get("add") if isinstance(data_change.get("add"), dict) else data_change
+    add_target: dict[str, Any] = {}
+    for key in ("add_category", "category_name"):
+        value = operation_target.get(key)
+        if isinstance(value, str) and value.strip():
+            add_target["category_name"] = value.strip()
+            break
+    return add_target, add_change if isinstance(add_change, dict) else {}
+
+
+def _structured_change_steps(
+    operation_target: dict[str, Any],
+    data_change: dict[str, Any],
+    hints: list[str],
+) -> list[dict[str, Any]]:
+    change_root = data_change.get("change") if isinstance(data_change.get("change"), dict) else data_change
+    if not isinstance(change_root, dict):
+        return []
+    changes = change_root.get("changes")
+    if not isinstance(changes, list) or not changes:
+        return []
+
+    steps: list[dict[str, Any]] = []
+    for idx, change in enumerate(changes):
+        if not isinstance(change, dict):
+            continue
+        label = str(change.get("category_name") or "").strip()
+        step_target = {"category_name": label} if label else {}
+        step_change = {
+            "mode": "multi_step",
+            "changes": [change],
+        }
+        steps.append(
+            {
+                "operation": "change",
+                "operation_target": step_target,
+                "data_change": step_change,
+                "question_hint": hints[idx] if idx < len(hints) else "",
+                "new_points": [],
+            }
+        )
+    return steps
+
+
+def _points_from_data_change(data_change: dict[str, Any]) -> list[dict[str, float]]:
+    points = data_change.get("points") if isinstance(data_change, dict) else None
+    return _coerce_points(points if isinstance(points, list) else [])
+
+
+def _render_structured_step_question(step: dict[str, Any]) -> str:
+    operation = str(step.get("operation") or "unknown").strip().lower()
+    operation_target = step.get("operation_target")
+    data_change = step.get("data_change")
+    if not isinstance(operation_target, dict):
+        operation_target = {}
+    if not isinstance(data_change, dict):
+        data_change = {}
+
+    if operation == "add":
+        label = str(operation_target.get("category_name") or "").strip()
+        values = data_change.get("values")
+        if label and isinstance(values, list) and values:
+            values_text = ", ".join(str(v) for v in values)
+            return f'Add the category/series "{label}" with values [{values_text}]'
+        if label:
+            return f'Add the category/series "{label}"'
+
+    if operation == "delete":
+        label = str(operation_target.get("category_name") or "").strip()
+        if label:
+            return f'Delete the category/series "{label}"'
+
+    if operation == "change":
+        clauses: list[str] = []
+        changes = data_change.get("changes")
+        if isinstance(changes, list):
+            for change in changes:
+                if not isinstance(change, dict):
+                    continue
+                label = str(change.get("category_name") or "").strip()
+                years = change.get("years")
+                values = change.get("values")
+                if not isinstance(years, list) or not isinstance(values, list):
+                    continue
+                for year, value in zip(years, values):
+                    clauses.append(f'Change "{label}" in {year} to {value}')
+        if clauses:
+            return "; ".join(clauses)
+
+    hint = str(step.get("question_hint") or "").strip()
+    if hint:
+        return hint
+
+    parts = [f"Operation: {operation}"]
+    if operation_target:
+        parts.append(f"Operation target: {json.dumps(operation_target, ensure_ascii=False)}")
+    if data_change:
+        parts.append(f"Data change: {json.dumps(data_change, ensure_ascii=False)}")
+    return "\n".join(parts)
 
 
 def _step_paths(svg_path: str, chart_type: str, idx: int, total: int) -> tuple[str | None, str | None]:
@@ -587,11 +926,12 @@ def _execute_planned_steps(
     inputs: dict[str, Any],
     planned_question: str,
     operation_plan: dict[str, Any],
+    structured_context: dict[str, Any],
     chart_type: str,
     llm: Any,
     used_scatter_points: list[dict[str, float]],
 ) -> tuple[str | None, list[dict[str, Any]], list[dict[str, Any]], Any, list[dict[str, float]]]:
-    steps = _operation_steps_from_plan(operation_plan, planned_question)
+    steps = _operation_steps_from_plan(operation_plan, planned_question, structured_context)
     step_logs: list[dict[str, Any]] = []
     perception_steps: list[dict[str, Any]] = []
     current_svg = str(inputs["svg_path"])
@@ -600,7 +940,7 @@ def _execute_planned_steps(
     scatter_points = list(used_scatter_points)
 
     for idx, step in enumerate(steps):
-        step_q = str(step.get("question") or planned_question)
+        step_q = _render_structured_step_question(step)
         step_inputs = dict(inputs)
         step_inputs["svg_path"] = current_svg
         step_inputs["question"] = step_q
@@ -612,6 +952,9 @@ def _execute_planned_steps(
                 "index": idx + 1,
                 "operation": step.get("operation"),
                 "question": step_q,
+                "question_hint": step.get("question_hint"),
+                "operation_target": step.get("operation_target"),
+                "data_change": step.get("data_change"),
                 "perception": _sanitize_perception(state.perception),
             }
         )
@@ -622,6 +965,8 @@ def _execute_planned_steps(
             points = _coerce_points(step.get("new_points", []))
             if not points:
                 points = _coerce_points(operation_plan.get("new_points", []))
+            if not points:
+                points = _points_from_data_change(step.get("data_change", {}))
             if not points:
                 raise ValueError(f"step {idx+1}: scatter points missing")
             scatter_points = points

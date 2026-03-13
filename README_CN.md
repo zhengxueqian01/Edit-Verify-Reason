@@ -76,7 +76,7 @@ python -m src.run_dataset_via_main \
   --max-render-retries 2
 ```
 
-运行记录输出到：`output/dataset_records/<model>_<task>_<timestamp>/`。
+运行记录输出到：`output/dataset_records/<类别>_<任务>_<时间>/`，例如 `task1_add_20260313_153000/`。
 
 ## 独立验证 SVG 匹配
 
@@ -84,7 +84,7 @@ python -m src.run_dataset_via_main \
 
 ```bash
 python -m src.validate_svg_matches \
-  --pred-root output/dataset_records/dataset_task2-line_20260303_201506 \
+  --pred-root output/dataset_records/task2_del_20260303_201506 \
   --dataset-dir dataset/task2-line
 ```
 

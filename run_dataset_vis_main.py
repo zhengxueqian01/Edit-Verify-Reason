@@ -106,12 +106,22 @@ def synthesize_instruction(payload: dict[str, Any]) -> str:
 
     add_block = change.get("add") if isinstance(change, dict) else None
     if isinstance(add_block, dict):
+        add_blocks = [add_block]
+    elif isinstance(add_block, list):
+        add_blocks = [item for item in add_block if isinstance(item, dict)]
+    else:
+        add_blocks = []
+    if add_blocks:
         add_name = target.get("add_category") if isinstance(target, dict) else None
-        values = add_block.get("values")
-        if isinstance(values, list) and values:
+        add_names = add_name if isinstance(add_name, list) else [add_name]
+        for idx, block in enumerate(add_blocks):
+            values = block.get("values")
+            if not isinstance(values, list) or not values:
+                continue
             values_text = ", ".join(str(v) for v in values)
-            if isinstance(add_name, str) and add_name.strip():
-                parts.append(f"Add series \"{add_name.strip()}\" : [{values_text}]")
+            name = add_names[idx] if idx < len(add_names) else None
+            if isinstance(name, str) and name.strip():
+                parts.append(f"Add series \"{name.strip()}\" : [{values_text}]")
             else:
                 parts.append(f"Add series: [{values_text}]")
 
