@@ -7,7 +7,6 @@ import os
 import re
 import shutil
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +44,11 @@ def parse_args() -> argparse.Namespace:
         default="output/dataset_records",
         help="Root directory for run records.",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume in the existing task record directory and skip cases with result.json.",
+    )
     return parser.parse_args()
 
 
@@ -77,9 +81,7 @@ def build_run_dir_name(input_dir: Path) -> str:
         category = first.split("-", 1)[0] or first
         task = parts[-1].strip() or "run"
         prefix = f"{category}_{task}"
-    prefix = re.sub(r"[^A-Za-z0-9_-]+", "_", prefix).strip("_") or "dataset_run"
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"{prefix}_{stamp}"
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", prefix).strip("_") or "dataset_run"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -87,7 +89,7 @@ def load_json(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
-def choose_qa(payload: dict[str, Any], qa_index: int) -> tuple[str, Any]:
+def choose_qa(payload: dict[str, Any], qa_index: int) -> tuple[str, Any, dict[str, Any]]:
     qa = payload.get("QA")
     if isinstance(qa, list) and qa:
         idx = max(0, min(qa_index, len(qa) - 1))
@@ -95,21 +97,34 @@ def choose_qa(payload: dict[str, Any], qa_index: int) -> tuple[str, Any]:
         if isinstance(item, dict):
             q = str(item.get("question") or "").strip()
             if q:
-                return q, item.get("answer")
+                return q, item.get("answer"), item
     q = str(payload.get("question") or "").strip()
     if q:
-        return q, payload.get("answer")
+        return q, payload.get("answer"), {}
     raise ValueError("No question found in JSON.")
 
 
-def build_structured_update_context(payload: dict[str, Any]) -> dict[str, Any]:
+def build_structured_update_context(payload: dict[str, Any], qa_item: dict[str, Any] | None = None) -> dict[str, Any]:
     target = payload.get("operation_target")
     data_change = payload.get("data_change")
+    qa_item = qa_item if isinstance(qa_item, dict) else {}
+    cluster_params = {}
+    if str(payload.get("chart_type") or "").strip().lower() == "scatter":
+        if qa_item.get("eps") is not None or qa_item.get("min_samples") is not None:
+            cluster_params = {
+                "mode": "per_color",
+                "algorithm": "DBSCAN",
+                "eps": qa_item.get("eps"),
+                "min_samples": qa_item.get("min_samples"),
+                "source": "qa_payload",
+            }
     return {
         "chart_type": str(payload.get("chart_type") or "").strip().lower(),
         "operation": str(payload.get("operation") or "").strip().lower(),
+        "task": str(payload.get("task") or "").strip().lower(),
         "operation_target": target if isinstance(target, dict) else {},
         "data_change": data_change if isinstance(data_change, dict) else {},
+        "cluster_params": cluster_params,
     }
 
 
@@ -167,9 +182,22 @@ def format_answer_section(
         lines.append("Model Output: null")
     else:
         lines.append("Model Output:")
-        lines.append(json.dumps(payload, ensure_ascii=False, indent=2))
+        lines.append(json.dumps(_sanitize_report_payload(payload), ensure_ascii=False, indent=2))
     lines.append("")
     return lines
+
+
+def _sanitize_report_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"labels", "labels_by_color"}:
+                continue
+            sanitized[key] = _sanitize_report_payload(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_report_payload(item) for item in value]
+    return value
 
 
 def _extract_years(text: str) -> list[str]:
@@ -241,6 +269,56 @@ def extract_final_svg_path(result: dict[str, Any], source_svg: Path, chart_type:
     return None
 
 
+def build_summary_entry(
+    *,
+    case_id: str,
+    case_dir: Path,
+    case_out_dir: Path,
+    qa_question: str,
+    expected_answer: Any,
+    result: dict[str, Any],
+    err: str,
+) -> dict[str, Any]:
+    return {
+        "case": case_id,
+        "ok": not bool(err),
+        "question": qa_question,
+        "update_question": str(result.get("update_question") or ""),
+        "expected_answer": expected_answer,
+        "answer_original": (extract_answer_text_by_key(result, "answer_original") if not err else ""),
+        "answer_original_match": (
+            is_answer_match(expected_answer, extract_answer_text_by_key(result, "answer_original"))
+            if not err
+            else False
+        ),
+        "answer_modified": (extract_answer_text_by_key(result, "answer_initial") if not err else ""),
+        "answer_modified_match": (
+            is_answer_match(expected_answer, extract_answer_text_by_key(result, "answer_initial"))
+            if not err
+            else False
+        ),
+        "answer_tool_augmented": (
+            extract_answer_text_by_key(result, "answer_tool_augmented") if not err else ""
+        ),
+        "answer_tool_augmented_match": (
+            (
+                is_answer_match(expected_answer, extract_answer_text_by_key(result, "answer_tool_augmented"))
+                if extract_answer_payload(result, "answer_tool_augmented") is not None
+                else False
+            )
+            if not err
+            else False
+        ),
+        "answer_final": extract_answer_text(result) if not err else "",
+        "answer_final_match": (
+            is_answer_match(expected_answer, extract_answer_text(result)) if not err else False
+        ),
+        "record_dir": str(case_out_dir),
+        "case_dir": str(case_dir),
+        "error": err,
+    }
+
+
 def main() -> None:
     args = parse_args()
     input_dir = resolve_input_dir(args.input_dir)
@@ -282,10 +360,54 @@ def main() -> None:
         case_out_dir.mkdir(parents=True, exist_ok=True)
 
         payload = load_json(json_path)
-        qa_question, expected_answer = choose_qa(payload, args.qa_index)
+        qa_question, expected_answer, qa_item = choose_qa(payload, args.qa_index)
+        existing_result_path = case_out_dir / "result.json"
+        if args.resume and existing_result_path.exists():
+            existing_result = load_json(existing_result_path)
+            summary.append(
+                build_summary_entry(
+                    case_id=case_id,
+                    case_dir=case_dir,
+                    case_out_dir=case_out_dir,
+                    qa_question=qa_question,
+                    expected_answer=expected_answer,
+                    result=existing_result,
+                    err="",
+                )
+            )
+            answer_original_text = extract_answer_text_by_key(existing_result, "answer_original")
+            answer_original_match = is_answer_match(expected_answer, answer_original_text)
+            answer_modified_text = extract_answer_text_by_key(existing_result, "answer_initial")
+            answer_modified_match = is_answer_match(expected_answer, answer_modified_text)
+            answer_tool_aug_payload = extract_answer_payload(existing_result, "answer_tool_augmented")
+            answer_tool_aug_text = extract_answer_text_by_key(existing_result, "answer_tool_augmented")
+            answer_tool_aug_match = (
+                is_answer_match(expected_answer, answer_tool_aug_text) if answer_tool_aug_payload else None
+            )
+            success += 1
+            answer_original_evaluated += 1
+            if answer_original_match:
+                answer_original_matched += 1
+            answer_modified_evaluated += 1
+            if answer_modified_match:
+                answer_modified_matched += 1
+            if answer_tool_aug_payload is not None:
+                answer_tool_aug_evaluated += 1
+                if answer_tool_aug_match:
+                    answer_tool_aug_matched += 1
+                answer_effective_evaluated += 1
+                if answer_tool_aug_match:
+                    answer_effective_matched += 1
+            else:
+                answer_effective_evaluated += 1
+                if answer_modified_match:
+                    answer_effective_matched += 1
+            print(f"[SKIP] {case_id} -> {case_out_dir}")
+            continue
+
         split_update_question = ""
         chart_type_hint = str(payload.get("chart_type") or "").strip().lower() or None
-        structured_update_context = build_structured_update_context(payload)
+        structured_update_context = build_structured_update_context(payload, qa_item)
 
         result: dict[str, Any]
         err = ""
@@ -418,43 +540,15 @@ def main() -> None:
             }
 
         summary.append(
-            {
-                "case": case_id,
-                "ok": not bool(err),
-                "question": qa_question,
-                "update_question": split_update_question,
-                "expected_answer": expected_answer,
-                "answer_original": (extract_answer_text_by_key(result, "answer_original") if not err else ""),
-                "answer_original_match": (
-                    is_answer_match(expected_answer, extract_answer_text_by_key(result, "answer_original"))
-                    if not err
-                    else False
-                ),
-                "answer_modified": (extract_answer_text_by_key(result, "answer_initial") if not err else ""),
-                "answer_modified_match": (
-                    is_answer_match(expected_answer, extract_answer_text_by_key(result, "answer_initial"))
-                    if not err
-                    else False
-                ),
-                "answer_tool_augmented": (
-                    extract_answer_text_by_key(result, "answer_tool_augmented") if not err else ""
-                ),
-                "answer_tool_augmented_match": (
-                    (
-                        is_answer_match(expected_answer, extract_answer_text_by_key(result, "answer_tool_augmented"))
-                        if extract_answer_payload(result, "answer_tool_augmented") is not None
-                        else False
-                    )
-                    if not err
-                    else False
-                ),
-                "answer_final": extract_answer_text(result) if not err else "",
-                "answer_final_match": (
-                    is_answer_match(expected_answer, extract_answer_text(result)) if not err else False
-                ),
-                "record_dir": str(case_out_dir),
-                "error": err,
-            }
+            build_summary_entry(
+                case_id=case_id,
+                case_dir=case_dir,
+                case_out_dir=case_out_dir,
+                qa_question=qa_question,
+                expected_answer=expected_answer,
+                result=result,
+                err=err,
+            )
         )
         status = "OK" if not err else "FAIL"
         print(f"[{status}] {case_id} -> {case_out_dir}")

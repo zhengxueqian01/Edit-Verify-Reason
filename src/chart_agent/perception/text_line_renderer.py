@@ -79,6 +79,7 @@ def render_line_from_text(
         ax.legend(fontsize=8)
     ax.set_xlabel("")
     ax.set_ylabel("")
+    _lock_in_matplotlib_y_axis_format(fig, ax)
 
     target = output_path or _default_output_path()
     os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -216,12 +217,33 @@ def _apply_y_padding(ax, values: list[float], padding_ratio: float) -> None:
         return
     y_min = min(values)
     y_max = max(values)
-    if y_min == y_max:
-        y_min -= 1.0
-        y_max += 1.0
     span = y_max - y_min
-    pad = span * padding_ratio
-    ax.set_ylim(y_min - pad, y_max + pad)
+    if span:
+        lower_pad = span * 0.05
+        upper_pad = span * 0.15
+    else:
+        margin = max(abs(y_max) * 0.05, 1.0)
+        lower_pad = margin
+        upper_pad = margin * 3
+    ax.set_ylim(y_min - lower_pad, y_max + upper_pad)
+
+
+def _lock_in_matplotlib_y_axis_format(fig, ax) -> dict[str, Any]:
+    fig.canvas.draw()
+    formatter = ax.yaxis.get_major_formatter()
+    offset_text = formatter.get_offset() if hasattr(formatter, "get_offset") else ""
+    tick_values = [float(v) for v in ax.get_yticks()]
+    tick_labels = [tick.get_text() for tick in ax.get_yticklabels()]
+
+    if hasattr(formatter, "set_locs"):
+        formatter.set_locs(ax.get_yticks())
+    ax.yaxis.set_major_formatter(formatter)
+
+    return {
+        "offset_text": offset_text,
+        "tick_values": tick_values,
+        "tick_labels": tick_labels,
+    }
 
 
 def _default_output_path() -> str:

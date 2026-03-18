@@ -30,7 +30,7 @@ brew install resvg
 Set API keys in `.env` (or system env):
 
 ```env
-Aihubmix_API_KEY_ZZT=
+Aihubmix_API_KEY=
 Siliconflow_API_KEY=
 Doubao_API_KEY=
 ```

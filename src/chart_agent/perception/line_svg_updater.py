@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import html
 import json
 import math
 import os
@@ -10,6 +12,8 @@ from typing import Any
 from chart_agent.perception.svg_renderer import default_output_paths, render_svg_to_png
 
 SVG_NS = "http://www.w3.org/2000/svg"
+REFERENCE_LINE_FIGSIZE = (8, 5)
+REFERENCE_LINE_DPI = 300
 
 ET.register_namespace("", SVG_NS)
 
@@ -108,13 +112,14 @@ def _add_line_series(
     line_style = _extract_line_style(root)
     stroke = line_style.get("stroke", "#dc143c")
     stroke_width = line_style.get("stroke_width", 2.0)
+    use_markers = bool(line_style.get("has_markers", False))
     line_path.set(
         "style",
         f"fill: none; stroke: {stroke}; stroke-width: {stroke_width}",
     )
 
     line_path.set("d", _format_path(points_svg))
-    _draw_line_markers(axes, points_svg, stroke)
+    _draw_line_markers(axes, points_svg, stroke, enabled=use_markers)
 
     label = _extract_series_label(question)
     if not label and llm is not None:
@@ -122,7 +127,7 @@ def _add_line_series(
     if label:
         legend, legend_items = _extract_legend_items(root, content)
         if legend is not None:
-            _append_legend_item(legend, legend_items, label, stroke)
+            _append_legend_item(legend, legend_items, label, stroke, show_marker=use_markers)
 
     svg_out, png_out = default_output_paths(svg_path, "line")
     target_svg = svg_output_path or svg_out
@@ -289,8 +294,16 @@ def _extract_path_points(d_attr: str) -> list[tuple[float, float]]:
     return points
 
 
-def _draw_line_markers(axes: ET.Element, points: list[tuple[float, float]], stroke: str) -> None:
+def _draw_line_markers(
+    axes: ET.Element,
+    points: list[tuple[float, float]],
+    stroke: str,
+    *,
+    enabled: bool,
+) -> None:
     group = _ensure_update_marker_group(axes)
+    if not enabled:
+        return
     radius = 3.0
     for x_val, y_val in points:
         circle = ET.SubElement(group, f"{{{SVG_NS}}}circle")
@@ -483,9 +496,7 @@ def _remove_line_series(
 
     legend, legend_items = _extract_legend_items(root, content)
     labels = [item["label"] for item in legend_items if item.get("label")]
-    labels_to_remove = _match_labels_with_llm(question, labels, llm) if llm is not None else []
-    if not labels_to_remove and llm is None:
-        labels_to_remove = _match_labels(question, labels)
+    labels_to_remove = _resolve_delete_labels(question, labels, llm)
     if not labels_to_remove:
         raise ValueError("No matching line series found in question.")
 
@@ -589,6 +600,13 @@ def _match_labels_with_llm(question: str, labels: list[str], llm: Any) -> list[s
         if key in normalized and normalized[key] not in out:
             out.append(normalized[key])
     return out
+
+
+def _resolve_delete_labels(question: str, labels: list[str], llm: Any | None) -> list[str]:
+    labels_to_remove = _match_labels_with_llm(question, labels, llm) if llm is not None else []
+    if labels_to_remove:
+        return labels_to_remove
+    return _match_labels(question, labels)
 
 
 def _parse_year_value_update(
@@ -780,16 +798,21 @@ def _extract_legend_items(
 
 
 def _append_legend_item(
-    legend: ET.Element, items: list[dict[str, Any]], label: str, stroke: str
+    legend: ET.Element,
+    items: list[dict[str, Any]],
+    label: str,
+    stroke: str,
+    *,
+    show_marker: bool,
 ) -> None:
     y_min, y_max, x_min, x_max = _legend_bounds(items)
-    text_x, text_y = _legend_text_anchor(items)
-    if text_y is None:
-        text_x, text_y = _legend_text_anchor_from_legend(legend)
-    if text_y is None:
+    text_x, last_text_y = _legend_text_anchor(items, prefer_last=True)
+    if last_text_y is None:
+        text_x, last_text_y = _legend_text_anchor_from_legend(legend, prefer_last=True)
+    if last_text_y is None:
         return
     step = _legend_step(items)
-    next_text_y = text_y + step
+    next_text_y = last_text_y + step
 
     if y_min is None or y_max is None:
         x_min = text_x - 28.0
@@ -803,11 +826,12 @@ def _append_legend_item(
     path.set("d", f"M {x_min:.6f} {y_line:.6f} L {x_max:.6f} {y_line:.6f}")
     path.set("style", f"fill: none; stroke: {stroke}; stroke-width: 1.5")
 
-    marker = ET.SubElement(line_group, f"{{{SVG_NS}}}circle")
-    marker.set("cx", f"{(x_min + x_max) / 2.0:.6f}")
-    marker.set("cy", f"{y_line:.6f}")
-    marker.set("r", "3")
-    marker.set("style", f"fill: {stroke}; stroke: {stroke}")
+    if show_marker:
+        marker = ET.SubElement(line_group, f"{{{SVG_NS}}}circle")
+        marker.set("cx", f"{(x_min + x_max) / 2.0:.6f}")
+        marker.set("cy", f"{y_line:.6f}")
+        marker.set("r", "3")
+        marker.set("style", f"fill: {stroke}; stroke: {stroke}")
 
     text = ET.SubElement(legend, f"{{{SVG_NS}}}text")
     text.set("x", f"{(x_max + 8.0):.6f}")
@@ -851,8 +875,9 @@ def _legend_step(items: list[dict[str, Any]]) -> float:
     return 14.0
 
 
-def _legend_text_anchor(items: list[dict[str, Any]]) -> tuple[float, float | None]:
-    for item in items:
+def _legend_text_anchor(items: list[dict[str, Any]], prefer_last: bool = False) -> tuple[float, float | None]:
+    iterable = reversed(items) if prefer_last else iter(items)
+    for item in iterable:
         text = item.get("text")
         if text is None:
             continue
@@ -866,8 +891,10 @@ def _legend_text_anchor(items: list[dict[str, Any]]) -> tuple[float, float | Non
     return 0.0, None
 
 
-def _legend_text_anchor_from_legend(legend: ET.Element) -> tuple[float, float | None]:
-    for g in legend.findall(f'.//{{{SVG_NS}}}g'):
+def _legend_text_anchor_from_legend(legend: ET.Element, prefer_last: bool = False) -> tuple[float, float | None]:
+    groups = legend.findall(f'.//{{{SVG_NS}}}g')
+    iterable = reversed(groups) if prefer_last else iter(groups)
+    for g in iterable:
         transform = g.get("transform", "")
         match = re.search(r"translate\(([-\d.]+)\s+([-\d.]+)\)", transform)
         if match:
@@ -891,7 +918,7 @@ def _extract_text_label(group: ET.Element, content: str) -> str | None:
     pattern = rf'<g\s+id="{re.escape(gid)}"[^>]*>.*?<!--\s*(.*?)\s*-->'
     match = re.search(pattern, content, re.DOTALL)
     if match:
-        return match.group(1).strip()
+        return html.unescape(match.group(1)).strip()
     return None
 
 
@@ -1016,6 +1043,8 @@ def _extract_line_style(root: ET.Element) -> dict[str, float | str]:
     axes = root.find(f'.//{{{SVG_NS}}}g[@id="axes_1"]')
     if axes is None:
         return {}
+    used_strokes: list[str] = []
+    first_style: dict[str, float | str] | None = None
     for g in axes.findall(f'.//{{{SVG_NS}}}g'):
         gid = g.get("id", "")
         if not gid.startswith("line2d_"):
@@ -1023,19 +1052,75 @@ def _extract_line_style(root: ET.Element) -> dict[str, float | str]:
         path = g.find(f'.//{{{SVG_NS}}}path')
         if path is None:
             continue
+        if not _is_plot_line_group(path):
+            continue
         style = path.get("style", "")
         stroke = _extract_style_value(style, "stroke")
         stroke_width = _extract_style_value(style, "stroke-width")
         if stroke:
-            return {
-                "stroke": stroke,
-                "stroke_width": float(stroke_width) if stroke_width else 2.0,
-            }
-    return {}
+            stroke_norm = stroke.strip()
+            if stroke_norm:
+                used_strokes.append(stroke_norm.lower())
+            if first_style is None:
+                first_style = {
+                    "stroke_width": float(stroke_width) if stroke_width else 2.0,
+                    "has_markers": _line_group_has_markers(g),
+                }
+    if first_style is None:
+        return {}
+    return {
+        "stroke": _pick_unused_line_stroke(used_strokes),
+        "stroke_width": first_style["stroke_width"],
+        "has_markers": first_style["has_markers"],
+    }
+
+
+def _is_plot_line_group(path: ET.Element) -> bool:
+    return bool(path.get("clip-path"))
+
+
+def _pick_unused_line_stroke(used_strokes: list[str]) -> str:
+    palette = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+        "#7f7f7f",
+        "#bcbd22",
+        "#17becf",
+        "#aec7e8",
+        "#ffbb78",
+        "#98df8a",
+        "#ff9896",
+        "#c5b0d5",
+        "#c49c94",
+        "#f7b6d2",
+        "#c7c7c7",
+        "#dbdb8d",
+        "#9edae5",
+    ]
+    used = {str(x or "").strip().lower() for x in used_strokes if str(x or "").strip()}
+    for color in palette:
+        if color.lower() not in used:
+            return color
+    return "#9467bd"
+
+
+def _line_group_has_markers(group: ET.Element) -> bool:
+    for elem in group.iter():
+        if elem is group:
+            continue
+        tag = elem.tag.split("}")[-1]
+        if tag in {"circle", "use"}:
+            return True
+    return False
 
 
 def _extract_style_value(style: str, key: str) -> str | None:
-    match = re.search(rf"{re.escape(key)}:\\s*([^;]+)", style)
+    match = re.search(rf"(?:^|;)\s*{re.escape(key)}:\s*([^;]+)", style)
     if match:
         return match.group(1).strip()
     return None
@@ -1047,10 +1132,9 @@ def _rescale_line_chart_after_removal(
     content: str,
     mapping_info: dict[str, Any],
 ) -> None:
-    # Re-parse from current SVG content to preserve scientific-notation axis scaling (e.g. 1e6).
+    # Re-parse from current SVG content so we can preserve the current SVG tick/pixel mapping
+    # before asking Matplotlib to recompute the next visible y-tick layout.
     y_ticks = _parse_axis_ticks(root, content, axis_id="matplotlib.axis_2", is_x=False)
-    y_axis_scale = _extract_axis_scale(content, "matplotlib.axis_2")
-    _set_axis_scale_metadata(root, "matplotlib.axis_2", y_axis_scale)
     if not y_ticks:
         y_ticks = mapping_info.get("y_ticks")
     if len(y_ticks) < 2:
@@ -1082,30 +1166,117 @@ def _rescale_line_chart_after_removal(
         data_max += pad
 
     tick_count_hint = max(2, len(y_ticks))
-    raw_step = (data_max - data_min) / max(1, tick_count_hint - 1)
-    step = _nice_step(raw_step)
-    if step <= 0:
-        step = 1.0
-
-    # Lower bound must not exceed data minimum, otherwise low points are clipped.
-    new_min = math.floor(data_min / step) * step
-    new_max = math.ceil(data_max / step) * step
-    if new_max == new_min:
-        new_max = new_min + step
+    view_min, view_max = _compute_draw_style_y_limits(data_min, data_max)
+    axis_layout = _compute_matplotlib_y_axis_layout(view_min, view_max, tick_count_hint)
+    new_tick_values = axis_layout["tick_values"]
+    if len(new_tick_values) < 2:
+        return
+    new_tick_labels = axis_layout["tick_labels"]
+    y_axis_scale = axis_layout["axis_scale"]
+    _set_axis_scale_metadata(root, "matplotlib.axis_2", y_axis_scale)
+    new_min = axis_layout["view_min"]
+    new_max = axis_layout["view_max"]
 
     old_ticks_sorted = sorted(y_ticks, key=lambda t: t[1])
     old_min_pixel = old_ticks_sorted[0][0]
     old_max_pixel = old_ticks_sorted[-1][0]
+    pixel_top, pixel_bottom = _extract_plot_y_bounds(root, mapping_info)
 
-    # Keep tick count stable to avoid cloning/removing SVG tick groups with duplicate ids.
-    new_tick_values = _build_ticks(new_min, new_max, tick_count_hint)
     new_ticks = [
-        (_map_data_to_pixel(val, new_min, new_max, old_min_pixel, old_max_pixel), val)
+        (_map_data_to_pixel(val, new_min, new_max, pixel_bottom, pixel_top), val)
         for val in new_tick_values
     ]
 
-    _update_y_axis_ticks(root, new_ticks, axis_scale=y_axis_scale)
-    _rescale_series_groups(series_groups, y_ticks, new_min, new_max, old_min_pixel, old_max_pixel)
+    _update_y_axis_ticks(root, new_ticks, axis_scale=y_axis_scale, tick_labels=new_tick_labels)
+    _update_y_axis_scale_text(root, y_axis_scale)
+    _rescale_series_groups(series_groups, y_ticks, new_min, new_max, pixel_bottom, pixel_top)
+
+
+def _compute_matplotlib_y_axis_layout(
+    view_min: float,
+    view_max: float,
+    tick_count_hint: int,
+) -> dict[str, Any]:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+    from matplotlib.ticker import ScalarFormatter
+
+    fig = Figure(figsize=REFERENCE_LINE_FIGSIZE, dpi=REFERENCE_LINE_DPI)
+    FigureCanvasAgg(fig)
+    ax = fig.add_subplot(111)
+    ax.set_ylim(view_min, view_max)
+    formatter = ScalarFormatter()
+    ax.yaxis.set_major_formatter(formatter)
+    fig.canvas.draw()
+
+    vmin, vmax = sorted(ax.yaxis.get_view_interval())
+    tolerance = max(1e-12, (vmax - vmin) * 1e-9)
+    tick_values = [
+        float(tick)
+        for tick in ax.get_yticks()
+        if vmin - tolerance <= float(tick) <= vmax + tolerance
+    ]
+    tick_labels = formatter.format_ticks(tick_values) if tick_values else []
+    axis_scale = _axis_scale_from_formatter_offset(formatter.get_offset())
+    fig.clear()
+    return {
+        "tick_values": tick_values,
+        "tick_labels": tick_labels,
+        "axis_scale": axis_scale,
+        "offset_text": formatter.get_offset(),
+        "view_min": float(vmin),
+        "view_max": float(vmax),
+    }
+
+
+def _compute_draw_style_y_limits(data_min: float, data_max: float) -> tuple[float, float]:
+    span = data_max - data_min
+    margin = span * 0.05 if span else max(abs(data_max) * 0.05, 1.0)
+    return float(data_min - margin), float(data_max + margin * 3)
+
+
+def _extract_plot_y_bounds(root: ET.Element, mapping_info: dict[str, Any]) -> tuple[float, float]:
+    axes_bounds = mapping_info.get("axes_bounds")
+    if isinstance(axes_bounds, dict):
+        top = axes_bounds.get("y_min")
+        bottom = axes_bounds.get("y_max")
+        if isinstance(top, (int, float)) and isinstance(bottom, (int, float)):
+            return float(top), float(bottom)
+
+    patch = root.find(f'.//{{{SVG_NS}}}g[@id="patch_2"]/{{{SVG_NS}}}path')
+    if patch is not None:
+        points = [float(x) for x in re.findall(r'[-+]?\d*\.?\d+(?:e[-+]?\d+)?', patch.get("d", ""))]
+        ys = points[1::2]
+        if ys:
+            return min(ys), max(ys)
+
+    return 37.249375, 314.449375
+
+
+def _axis_scale_from_formatter_offset(offset_text: str) -> float:
+    if not offset_text:
+        return 1.0
+    text = offset_text.strip()
+    sci_patterns = [
+        (r"^([+-]?(?:\d+(?:\.\d+)?|\.\d+)e[+-]?\d+)$", False),
+        (r"^10\^([+-]?\d+)$", True),
+        (r"^[×x]\s*10\^([+-]?\d+)$", True),
+    ]
+    for pattern, is_power_of_ten in sci_patterns:
+        match = re.match(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        token = match.group(1)
+        try:
+            value = 10.0 ** float(token) if is_power_of_ten else float(token)
+        except ValueError:
+            continue
+        if math.isfinite(value) and value != 0:
+            return value
+    return 1.0
 
 
 def _find_line_series_groups(axes: ET.Element) -> list[ET.Element]:
@@ -1370,6 +1541,7 @@ def _update_y_axis_ticks(
     new_ticks: list[tuple[float, float]],
     *,
     axis_scale: float = 1.0,
+    tick_labels: list[str] | None = None,
 ) -> None:
     axis = root.find(f'.//{{{SVG_NS}}}g[@id="matplotlib.axis_2"]')
     if axis is None:
@@ -1388,13 +1560,17 @@ def _update_y_axis_ticks(
     desired = len(new_ticks_sorted)
 
     if desired > len(tick_groups):
-        # Keep original tick-group structure stable; avoid cloning groups with duplicated inner ids.
-        new_ticks_sorted = new_ticks_sorted[: len(tick_groups)]
-        desired = len(new_ticks_sorted)
+        template = tick_groups[-1]
+        while len(tick_groups) < desired:
+            cloned = copy.deepcopy(template)
+            tick_groups.append(cloned)
+            axis.insert(len(tick_groups) - 1, cloned)
+        _renumber_y_tick_groups(root, tick_groups)
     elif desired < len(tick_groups):
         for extra in tick_groups[desired:]:
             axis.remove(extra)
         tick_groups = tick_groups[:desired]
+        _renumber_y_tick_groups(root, tick_groups)
 
     count = min(len(tick_groups), desired)
 
@@ -1402,6 +1578,7 @@ def _update_y_axis_ticks(
         tick_group = tick_groups[idx]
         new_y, new_value = new_ticks_sorted[idx]
         text_x, _, text_offset = _extract_tick_text_anchor(tick_group)
+        label_text = tick_labels[idx] if tick_labels and idx < len(tick_labels) else None
         _update_tick_line_position(tick_group, new_y)
         _update_tick_label(
             tick_group,
@@ -1409,7 +1586,35 @@ def _update_y_axis_ticks(
             text_x,
             new_y if text_offset is None else new_y + text_offset,
             axis_scale=axis_scale,
+            label_text=label_text,
         )
+
+
+def _renumber_y_tick_groups(root: ET.Element, tick_groups: list[ET.Element]) -> None:
+    next_line2d = _next_prefixed_numeric_id(root, "line2d_")
+    next_text = _next_prefixed_numeric_id(root, "text_")
+    for idx, tick_group in enumerate(tick_groups, start=1):
+        tick_group.set("id", f"ytick_{idx}")
+        for child in tick_group.findall(f'./{{{SVG_NS}}}g'):
+            gid = child.get("id", "")
+            if gid.startswith("line2d_"):
+                child.set("id", f"line2d_{next_line2d}")
+                next_line2d += 1
+            elif gid.startswith("text_"):
+                child.set("id", f"text_{next_text}")
+                next_text += 1
+
+
+def _next_prefixed_numeric_id(root: ET.Element, prefix: str) -> int:
+    max_seen = 0
+    for elem in root.iter():
+        gid = elem.get("id", "")
+        if not gid.startswith(prefix):
+            continue
+        suffix = gid[len(prefix) :]
+        if suffix.isdigit():
+            max_seen = max(max_seen, int(suffix))
+    return max_seen + 1
 
 def _extract_tick_text_anchor(
     tick_group: ET.Element,
@@ -1464,6 +1669,7 @@ def _update_tick_label(
     new_y: float,
     *,
     axis_scale: float = 1.0,
+    label_text: str | None = None,
 ) -> None:
     text_group = None
     for g in tick_group.findall(f'./{{{SVG_NS}}}g'):
@@ -1485,7 +1691,7 @@ def _update_tick_label(
     text_elem.set("font-family", "DejaVu Sans")
     text_elem.set("fill", "#000000")
     text_elem.set("text-anchor", "end")
-    text_elem.text = _format_tick_label(value, axis_scale=axis_scale)
+    text_elem.text = label_text if label_text is not None else _format_tick_label(value, axis_scale=axis_scale)
 
 
 def _fallback_tick_text_x(tick_group: ET.Element) -> float:
@@ -1498,6 +1704,52 @@ def _fallback_tick_text_x(tick_group: ET.Element) -> float:
         except ValueError:
             continue
     return 0.0
+
+
+def _update_y_axis_scale_text(root: ET.Element, axis_scale: float) -> None:
+    axis = root.find(f'.//{{{SVG_NS}}}g[@id="matplotlib.axis_2"]')
+    if axis is None:
+        return
+
+    scale_group = None
+    for child in list(axis):
+        gid = child.get("id", "")
+        if not gid.startswith("text_"):
+            continue
+        text_value = _extract_group_comment_text(child)
+        if text_value and re.fullmatch(r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)e[+-]?\d+", text_value):
+            scale_group = child
+            break
+
+    if axis_scale == 1.0:
+        if scale_group is not None:
+            axis.remove(scale_group)
+        return
+
+    scale_text = f"{axis_scale:.0e}".replace("+0", "").replace("+", "")
+    scale_text = scale_text.replace("e0", "e").replace("e-0", "e-")
+    if scale_group is None:
+        next_text = _next_prefixed_numeric_id(axis, "text_")
+        scale_group = ET.SubElement(axis, f"{{{SVG_NS}}}g", {"id": f"text_{next_text}"})
+    else:
+        for child in list(scale_group):
+            scale_group.remove(child)
+
+    scale_group.append(ET.Comment(f" {scale_text} "))
+    text_elem = ET.SubElement(scale_group, f"{{{SVG_NS}}}text")
+    text_elem.set("x", "41.880625")
+    text_elem.set("y", "34.249375")
+    text_elem.set("font-size", "10")
+    text_elem.set("font-family", "Times New Roman")
+    text_elem.set("fill", "#000000")
+    text_elem.text = scale_text
+
+
+def _extract_group_comment_text(group: ET.Element) -> str | None:
+    for child in list(group):
+        if child.tag is ET.Comment:
+            return (child.text or "").strip()
+    return None
 
 
 def _rescale_series_groups(

@@ -146,6 +146,11 @@ class AppHandler(BaseHTTPRequestHandler):
             return
 
         output_image_path = result.get("output_image_path")
+        tool_phase = result.get("tool_phase") if isinstance(result, dict) else None
+        if isinstance(tool_phase, dict):
+            augmented_image_path = str(tool_phase.get("augmented_image_path") or "").strip()
+            if augmented_image_path:
+                output_image_path = augmented_image_path
         output_image_url = None
         if isinstance(output_image_path, str) and output_image_path:
             output_image_url = "/files/" + output_image_path.lstrip("/")

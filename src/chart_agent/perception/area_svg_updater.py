@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -753,6 +754,11 @@ def _extract_multi_add_series_specs(question: str) -> list[dict[str, Any]]:
     clauses = [c.strip() for c in re.split(r"[；;\n]+", question) if c.strip()]
     specs: list[dict[str, Any]] = []
     for clause in clauses:
+        # Only treat explicit add-series instructions as multi-add input.
+        # Change/delete clauses may also contain quoted labels and numbers, and
+        # must not be reinterpreted as new series payloads.
+        if not _has_add_intent(clause) or _has_year_update(clause) or _has_delete_intent(clause):
+            continue
         values = _parse_with_regex(clause)
         if not values:
             continue
@@ -1052,7 +1058,7 @@ def _extract_text_label(group: ET.Element, content: str) -> str | None:
     pattern = rf'<g\s+id="{re.escape(gid)}"[^>]*>.*?<!--\s*(.*?)\s*-->'
     match = re.search(pattern, content, re.DOTALL)
     if match:
-        return match.group(1).strip()
+        return html.unescape(match.group(1)).strip()
     return None
 
 

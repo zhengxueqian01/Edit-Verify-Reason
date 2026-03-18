@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+import unittest
+import xml.etree.ElementTree as ET
+
+from chart_agent.core.vision_tool_phase import (
+    _extract_colored_scatter_points,
+    _extract_line_labels_from_intersection_question,
+    _prefer_line_intersection_tools,
+    _prefer_multi_color_scatter_tools,
+    _svg_zoom_and_highlight_intersection,
+)
+
+
+class VisionToolPhaseTests(unittest.TestCase):
+    def test_scatter_prefers_multi_color_topology_by_default(self) -> None:
+        calls = [
+            {"tool": "isolate_color_topology", "args": {"target_color": "red"}},
+            {"tool": "highlight_rect", "args": {"x1": 1, "y1": 2, "x2": 3, "y2": 4}},
+        ]
+
+        updated = _prefer_multi_color_scatter_tools(
+            chart_type="scatter",
+            question="How many clusters are there in the scatter plot?",
+            tool_calls=calls,
+        )
+
+        self.assertEqual(updated[0], {"tool": "isolate_all_color_topologies", "args": {}})
+        self.assertEqual(updated[1], calls[1])
+
+    def test_scatter_keeps_single_color_when_question_names_color(self) -> None:
+        calls = [{"tool": "isolate_color_topology", "args": {"target_color": "red"}}]
+
+        updated = _prefer_multi_color_scatter_tools(
+            chart_type="scatter",
+            question="How many red clusters are visible?",
+            tool_calls=calls,
+        )
+
+        self.assertEqual(updated, calls)
+
+    def test_scatter_keeps_single_color_when_question_names_chinese_color(self) -> None:
+        calls = [{"tool": "isolate_color_topology", "args": {"target_color": "blue"}}]
+
+        updated = _prefer_multi_color_scatter_tools(
+            chart_type="scatter",
+            question="蓝色点形成了几个簇？",
+            tool_calls=calls,
+        )
+
+        self.assertEqual(updated, calls)
+
+    def test_scatter_replaces_all_single_color_calls_when_question_is_not_color_specific(self) -> None:
+        calls = [
+            {"tool": "isolate_color_topology", "args": {"target_color": "red"}},
+            {"tool": "highlight_rect", "args": {"x1": 1, "y1": 2, "x2": 3, "y2": 4}},
+            {"tool": "isolate_color_topology", "args": {"target_color": "blue"}},
+        ]
+
+        updated = _prefer_multi_color_scatter_tools(
+            chart_type="scatter",
+            question="How many clusters are visible overall?",
+            tool_calls=calls,
+        )
+
+        self.assertEqual(updated[0], {"tool": "isolate_all_color_topologies", "args": {}})
+        self.assertEqual(updated[1:], [calls[1]])
+
+    def test_non_scatter_tools_are_unchanged(self) -> None:
+        calls = [{"tool": "isolate_color_topology", "args": {"target_color": "red"}}]
+
+        updated = _prefer_multi_color_scatter_tools(chart_type="line", question="How many crossings?", tool_calls=calls)
+
+        self.assertEqual(updated, calls)
+
+    def test_existing_multi_color_call_is_preserved(self) -> None:
+        calls = [{"tool": "isolate_all_color_topologies", "args": {}}]
+
+        updated = _prefer_multi_color_scatter_tools(
+            chart_type="scatter",
+            question="Count all clusters in the scatter plot.",
+            tool_calls=calls,
+        )
+
+        self.assertEqual(updated, calls)
+
+    def test_line_intersection_question_adds_zoom_highlight_call(self) -> None:
+        updated = _prefer_line_intersection_tools(
+            chart_type="line",
+            question="How many times do the lines for Starburst Online and AetherNet intersect?",
+            tool_calls=[],
+        )
+
+        self.assertEqual(
+            updated,
+            [
+                {
+                    "tool": "zoom_and_highlight_intersection",
+                    "args": {"line_A": "Starburst Online", "line_B": "AetherNet"},
+                }
+            ],
+        )
+
+    def test_extract_line_labels_from_intersection_question(self) -> None:
+        labels = _extract_line_labels_from_intersection_question(
+            "After deleting the category CrimsonLink, how many times do the lines for Starburst Online and AetherNet intersect?"
+        )
+
+        self.assertEqual(labels, ("Starburst Online", "AetherNet"))
+
+    def test_extract_colored_scatter_points_reads_all_path_collections(self) -> None:
+        root = ET.fromstring(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+              <g id="axes_1">
+                <g id="PathCollection_1">
+                  <g><use xlink:href="#m1" x="1" y="2" style="fill: #2ca02c; stroke: #ffffff" /></g>
+                </g>
+                <g id="PathCollection_2">
+                  <g><use xlink:href="#m2" x="3" y="4" style="fill: #ff7f0e; stroke: #ffffff" /></g>
+                </g>
+                <g id="PathCollection_3">
+                  <g><use xlink:href="#m3" x="5" y="6" style="fill: #9467bd; stroke: #ffffff" /></g>
+                </g>
+              </g>
+            </svg>
+            """
+        )
+
+        points = _extract_colored_scatter_points(root, "http://www.w3.org/2000/svg")
+        fills = sorted(point["fill"] for point in points)
+
+        self.assertEqual(fills, ["#2ca02c", "#9467bd", "#ff7f0e"])
+
+    def test_zoom_and_highlight_intersection_draws_target_line_overlays(self) -> None:
+        root = ET.fromstring(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="axes_1">
+                <g id="line2d_1">
+                  <path d="M 10 10 L 20 20 L 30 30" style="fill: none; stroke: #ff0000; stroke-width: 2" />
+                </g>
+                <g id="line2d_2">
+                  <path d="M 10 30 L 20 20 L 30 10" style="fill: none; stroke: #0000ff; stroke-width: 2" />
+                </g>
+              </g>
+              <g id="legend_1">
+                <g id="legend_line_a"><path d="M 0 0 L 5 0" style="stroke: #ff0000" /></g>
+                <g id="text_1"><text>Starburst Online</text></g>
+                <g id="legend_line_b"><path d="M 0 0 L 5 0" style="stroke: #0000ff" /></g>
+                <g id="text_2"><text>AetherNet</text></g>
+              </g>
+            </svg>
+            """
+        )
+        overlay = ET.Element("{http://www.w3.org/2000/svg}g")
+
+        _svg_zoom_and_highlight_intersection(
+            root,
+            overlay,
+            "http://www.w3.org/2000/svg",
+            {"line_A": "Starburst Online", "line_B": "AetherNet"},
+            100,
+            100,
+        )
+
+        paths = overlay.findall("{http://www.w3.org/2000/svg}path")
+        circles = overlay.findall("{http://www.w3.org/2000/svg}circle")
+        texts = overlay.findall("{http://www.w3.org/2000/svg}text")
+
+        self.assertGreaterEqual(len(paths), 2)
+        self.assertGreaterEqual(len(circles), 1)
+        self.assertEqual(sorted(text.text for text in texts), ["AetherNet", "Starburst Online"])
+
+
+if __name__ == "__main__":
+    unittest.main()

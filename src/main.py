@@ -18,7 +18,7 @@ from chart_agent.core.perception_graph import run_perception
 from chart_agent.core.trace import append_trace
 from chart_agent.core.answerer import answer_question
 from chart_agent.core.vision_tool_phase import run_visual_tool_phase
-from chart_agent.core.clusterer import run_dbscan, svg_points_to_data
+from chart_agent.core.clusterer import run_dbscan, run_dbscan_by_color, svg_points_to_data
 from chart_agent.llm_factory import make_llm
 from chart_agent.perception.scatter_svg_updater import update_scatter_svg
 from chart_agent.perception.area_svg_updater import update_area_svg
@@ -39,7 +39,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 SUPPORTED_SVG_CHART_TYPES = {"scatter", "line", "area"}
-TOOL_AUG_CONFIDENCE_THRESHOLD = 0.7
+TOOL_AUG_CONFIDENCE_THRESHOLD = 0.85
 
 
 def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
@@ -64,16 +64,17 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
     original_image_path = _resolve_original_image_path(inputs)
     original_chart_type = str(inputs.get("chart_type_hint") or "unknown").strip().lower() or "unknown"
     answer_original_input = {
-        "question": original_combined_question,
+        "question": qa_question,
         "chart_type": original_chart_type,
         "output_image_path": original_image_path,
         "data_summary": {},
     }
     answer_original = answer_question(
-        qa_question=original_combined_question,
+        qa_question=qa_question,
         chart_type=original_chart_type,
         data_summary={},
         output_image_path=original_image_path,
+        image_context_note="This is the original chart image before any requested update is applied.",
         llm=answer_llm,
     )
     if not inputs.get("svg_path"):
@@ -98,7 +99,10 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
             perception_inputs["chart_type_hint"] = inputs.get("chart_type_hint")
         state = run_perception(perception_inputs)
         last_state = state
-        chart_type = _resolve_supported_chart_type(state.perception)
+        chart_type = _resolve_supported_chart_type(
+            state.perception,
+            str(inputs.get("chart_type_hint") or ""),
+        )
         state.perception["chart_type"] = chart_type
         mapping_info = state.perception.get("mapping_info", {})
         if chart_type not in SUPPORTED_SVG_CHART_TYPES:
@@ -221,30 +225,69 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
         "answer_original": answer_original,
     }
 
-    if not _is_render_check_passed(last_render_check):
+    allow_answer_after_failed_render = _should_answer_after_failed_render(
+        chart_type=chart_type,
+        structured_context=structured_context,
+        output_image_path=last_output_image,
+        attempt_logs=attempt_logs,
+        max_render_retries=max_render_retries,
+    )
+    if not _is_render_check_passed(last_render_check) and not allow_answer_after_failed_render:
         output["answer"] = {
             "answer": "Render validation failed after retries; QA skipped.",
             "confidence": 0.0,
             "issues": ["render_validation_failed"] + list(last_render_check.get("issues", [])),
         }
         return output
+    if not _is_render_check_passed(last_render_check):
+        output["render_validation_warning"] = {
+            "issues": ["render_validation_failed"] + list(last_render_check.get("issues", [])),
+        }
 
     cluster_result = None
+    cluster_params = _resolve_scatter_cluster_params(structured_context, qa_question)
     if chart_type == "scatter" and last_output_image:
         mapping_info = last_state.perception.get("mapping_info", {})
         svg_points = mapping_info.get("existing_points_svg", [])
+        svg_colors = mapping_info.get("existing_point_colors", [])
         x_ticks = mapping_info.get("x_ticks", [])
         y_ticks = mapping_info.get("y_ticks", [])
         existing_data = svg_points_to_data(svg_points, x_ticks, y_ticks)
-        new_data = [(p["x"], p["y"]) for p in used_scatter_points]
-        all_points = existing_data + new_data
-        if all_points:
-            cluster_result = run_dbscan(all_points, qa_question)
+        points_by_color: dict[str, list[tuple[float, float]]] = {}
+        for point, color in zip(existing_data, svg_colors):
+            color_key = str(color or "").strip().lower()
+            if not color_key:
+                continue
+            points_by_color.setdefault(color_key, []).append(point)
+        for point in used_scatter_points:
+            color_key = str(point.get("color") or point.get("point_color") or point.get("fill") or "").strip().lower()
+            if not color_key:
+                continue
+            points_by_color.setdefault(color_key, []).append((float(point["x"]), float(point["y"])))
+        if points_by_color:
+            cluster_result = run_dbscan_by_color(
+                points_by_color,
+                qa_question,
+                default_eps=float(cluster_params.get("eps") or 6.0),
+                default_min_samples=int(cluster_params.get("min_samples") or 3),
+            )
+        else:
+            new_data = [(p["x"], p["y"]) for p in used_scatter_points]
+            all_points = existing_data + new_data
+            if all_points:
+                cluster_result = run_dbscan(
+                    all_points,
+                    qa_question,
+                    default_eps=float(cluster_params.get("eps") or 6.0),
+                    default_min_samples=int(cluster_params.get("min_samples") or 3),
+                )
+        if cluster_result:
             output["cluster_result"] = _sanitize_cluster_result(cluster_result)
 
     answer_data_summary: dict[str, Any] = {
         "update_spec": last_state.perception.get("update_spec", {}),
         "cluster_result": cluster_result,
+        "cluster_params": cluster_params,
         "mapping_info_summary": {
             "num_points": last_state.perception.get("primitives_summary", {}).get("num_points"),
             "num_bars": last_state.perception.get("primitives_summary", {}).get("num_bars"),
@@ -269,6 +312,10 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
         chart_type=chart_type,
         data_summary=answer_data_summary,
         output_image_path=final_eval_image,
+        image_context_note=(
+            "The requested chart update has already been applied to this image. "
+            "Answer the QA question only based on the updated chart."
+        ),
         llm=answer_llm,
     )
     output["answer_initial"] = initial_answer
@@ -291,7 +338,8 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         initial_confidence = 0.0
 
-    if initial_confidence < TOOL_AUG_CONFIDENCE_THRESHOLD:
+    force_tool_phase = _should_force_visual_tool_phase(qa_question, chart_type)
+    if initial_confidence < TOOL_AUG_CONFIDENCE_THRESHOLD or force_tool_phase:
         tool_phase = run_visual_tool_phase(
             question=qa_question,
             chart_type=chart_type,
@@ -300,6 +348,8 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
             svg_path=final_step_svg_path or None,
             llm=tool_planner_llm,
         )
+        if force_tool_phase and isinstance(tool_phase, dict):
+            tool_phase["force_run"] = True
     else:
         tool_phase = {
             "ok": False,
@@ -308,28 +358,17 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
             "initial_confidence": initial_confidence,
             "tool_calls": [],
             "augmented_svg_path": None,
-            "augmented_image_path": last_output_image,
+            "augmented_image_path": None,
         }
     output["tool_phase"] = tool_phase
-
-    augmented_path = str(tool_phase.get("augmented_image_path") or "").strip()
-    if tool_phase.get("ok") and augmented_path:
-        output["answer_input_tool_augmented"] = {
-            "question": qa_question,
-            "chart_type": chart_type,
-            "output_image_path": augmented_path,
-            "data_summary": answer_data_summary,
-        }
-        output["answer_tool_augmented"] = answer_question(
-            qa_question=qa_question,
-            chart_type=chart_type,
-            data_summary=answer_data_summary,
-            output_image_path=augmented_path,
-            llm=answer_llm,
-        )
-        output["answer"] = output["answer_tool_augmented"]
-    else:
-        output["answer_tool_augmented"] = None
+    _apply_tool_augmented_answer(
+        output=output,
+        qa_question=qa_question,
+        chart_type=chart_type,
+        answer_data_summary=answer_data_summary,
+        tool_phase=tool_phase,
+        answer_llm=answer_llm,
+    )
     return output
 
 
@@ -383,6 +422,18 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
     return update_question, qa_question, split_info
 
 
+def _should_force_visual_tool_phase(question: str, chart_type: str) -> bool:
+    text = str(question or "").strip().lower()
+    chart = str(chart_type or "").strip().lower()
+    if not text:
+        return False
+    if chart == "scatter":
+        return any(token in text for token in ("cluster", "clusters", "聚类", "簇"))
+    if chart == "line":
+        return any(token in text for token in ("intersection", "intersections", "cross", "crossing", "交点", "相交", "穿过"))
+    return False
+
+
 def _heuristic_split_update_and_qa(question: str) -> tuple[str, str]:
     text = (question or "").strip()
     if not text:
@@ -398,16 +449,22 @@ def _heuristic_split_update_and_qa(question: str) -> tuple[str, str]:
 
 def _normalize_gerund_clause(text: str) -> str:
     cleaned = (text or "").strip().rstrip(".")
-    replacements = {
-        "adding ": "Add ",
-        "deleting ": "Delete ",
-        "removing ": "Remove ",
-        "changing ": "Change ",
-        "updating ": "Update ",
-        "applying ": "Apply ",
-    }
+    cleaned = re.sub(r"\band\s+adding\b", "and add", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\band\s+deleting\b", "and delete", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\band\s+removing\b", "and remove", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\band\s+changing\b", "and change", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\band\s+updating\b", "and update", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\band\s+applying\b", "and apply", cleaned, flags=re.IGNORECASE)
+    replacements = (
+        ("adding ", "Add "),
+        ("deleting ", "Delete "),
+        ("removing ", "Remove "),
+        ("changing ", "Change "),
+        ("updating ", "Update "),
+        ("applying ", "Apply "),
+    )
     lowered = cleaned.lower()
-    for prefix, replacement in replacements.items():
+    for prefix, replacement in replacements:
         if lowered.startswith(prefix):
             cleaned = replacement + cleaned[len(prefix):]
             break
@@ -442,14 +499,19 @@ def _normalize_structured_context(structured_context: Any) -> dict[str, Any]:
     out: dict[str, Any] = {}
     chart_type = str(structured_context.get("chart_type") or "").strip().lower()
     operation = str(structured_context.get("operation") or "").strip().lower()
+    task = str(structured_context.get("task") or "").strip().lower()
     operation_target = structured_context.get("operation_target")
     data_change = structured_context.get("data_change")
+    cluster_params = structured_context.get("cluster_params")
     if chart_type:
         out["chart_type"] = chart_type
     if operation:
         out["operation"] = operation
+    if task:
+        out["task"] = task
     out["operation_target"] = operation_target if isinstance(operation_target, dict) else {}
     out["data_change"] = data_change if isinstance(data_change, dict) else {}
+    out["cluster_params"] = cluster_params if isinstance(cluster_params, dict) else {}
     return out
 
 
@@ -516,6 +578,80 @@ def _sanitize_cluster_result(cluster_result: dict[str, object] | None) -> dict[s
     return sanitized
 
 
+def _resolve_scatter_cluster_params(structured_context: dict[str, Any], qa_question: str) -> dict[str, Any]:
+    params = structured_context.get("cluster_params")
+    if isinstance(params, dict) and (params.get("eps") is not None or params.get("min_samples") is not None):
+        return {
+            "mode": "per_color",
+            "algorithm": "DBSCAN",
+            "eps": params.get("eps"),
+            "min_samples": params.get("min_samples"),
+            "source": str(params.get("source") or "structured_context"),
+        }
+    if str(structured_context.get("chart_type") or "").strip().lower() == "scatter" and (
+        str(structured_context.get("task") or "").strip().lower() == "cluster"
+        or any(token in (qa_question or "").lower() for token in ("cluster", "clusters"))
+    ):
+        eps_match = re.search(r"eps\s*=\s*([\d.]+)", qa_question or "", re.IGNORECASE)
+        min_samples_match = re.search(r"min_samples?\s*=\s*(\d+)", qa_question or "", re.IGNORECASE)
+        eps = float(eps_match.group(1)) if eps_match else None
+        min_samples = int(min_samples_match.group(1)) if min_samples_match else None
+        return {
+            "mode": "per_color",
+            "algorithm": "DBSCAN",
+            "eps": eps,
+            "min_samples": min_samples,
+            "source": "qa_question_suffix",
+        }
+    return {}
+
+
+def _should_answer_after_failed_render(
+    *,
+    chart_type: str,
+    structured_context: dict[str, Any],
+    output_image_path: str | None,
+    attempt_logs: list[dict[str, Any]] | None = None,
+    max_render_retries: int = 2,
+) -> bool:
+    output_path = str(output_image_path or "").strip()
+    if chart_type == "scatter" and str(structured_context.get("task") or "").strip().lower() == "cluster":
+        return bool(output_path)
+    return _allow_answer_after_exhausted_render_validation(
+        output_image_path=output_path,
+        attempt_logs=attempt_logs,
+        max_render_retries=max_render_retries,
+    )
+
+
+def _allow_answer_after_exhausted_render_validation(
+    *,
+    output_image_path: str,
+    attempt_logs: list[dict[str, Any]] | None,
+    max_render_retries: int,
+) -> bool:
+    if not output_image_path or not os.path.exists(output_image_path):
+        return False
+    if not isinstance(attempt_logs, list) or not attempt_logs:
+        return False
+    required_attempts = max(1, int(max_render_retries) + 1)
+    if len(attempt_logs) < required_attempts:
+        return False
+    recent_attempts = attempt_logs[-required_attempts:]
+    blocked = 0
+    for attempt in recent_attempts:
+        if not isinstance(attempt, dict):
+            return False
+        attempt_output = str(attempt.get("output_image_path") or "").strip()
+        render_check = attempt.get("render_check")
+        if not attempt_output or not isinstance(render_check, dict):
+            return False
+        if _is_render_check_passed(render_check):
+            return False
+        blocked += 1
+    return blocked == required_attempts
+
+
 def _llm_plan_update(question: str, chart_type: str, llm: Any, retry_hint: str = "") -> dict[str, Any]:
     prompt = (
         "You are planning chart-edit operations.\n"
@@ -580,15 +716,21 @@ def _llm_split_update_and_qa(question: str, llm: Any) -> dict[str, Any]:
     prompt = (
         "You split mixed chart requests into update instruction and QA question.\n"
         "Return JSON only with keys:\n"
-        "- update_question: the chart edit command only (imperative)\n"
+        "- update_question: the chart edit command only (imperative, explicit, step-by-step)\n"
         "- qa_question: only the pure QA query to answer after chart is updated\n"
         "- llm_success: true\n"
         "Rules:\n"
         "- Output English only.\n"
         "- qa_question must NOT contain update preconditions like 'after deleting ...'.\n"
         "- Remove leading operation clauses from qa_question, keep only the actual question part.\n"
+        "- If there are multiple edit actions, rewrite update_question as an explicit ordered sequence.\n"
+        "- Use concise imperative verbs such as 'Delete', 'Add', 'Change', 'Apply'. Never use gerunds like 'adding', 'deleting', 'applying'.\n"
+        "- Preferred format for multiple actions: '1. Delete ...; 2. Apply ...; 3. Add ...'.\n"
+        "- Keep all concrete operation targets and value-revision references in update_question.\n"
         "- If one part is missing, return empty string for that key.\n"
         "- Do not add explanations.\n"
+        "Example:\n"
+        "{\"update_question\":\"1. Delete the category CrimsonLink; 2. Apply the listed value revisions.\",\"qa_question\":\"How many times do the lines for Starburst and AetherNet intersect?\",\"llm_success\":true}\n"
         "User input:\n"
         f"{question}"
     )
@@ -653,17 +795,22 @@ def _safe_json_loads(content: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _coerce_points(raw: Any) -> list[dict[str, float]]:
+def _coerce_points(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
-    points: list[dict[str, float]] = []
+    points: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
         try:
-            points.append({"x": float(item.get("x")), "y": float(item.get("y"))})
+            point: dict[str, Any] = {"x": float(item.get("x")), "y": float(item.get("y"))}
         except Exception:
             continue
+        for key in ("color", "point_color", "fill"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                point[key] = value.strip()
+        points.append(point)
     return points
 
 
@@ -791,6 +938,8 @@ def _pick_hint(op_to_hints: dict[str, list[str]], op: str, idx: int) -> str:
 
 def _structured_delete_labels(operation_target: dict[str, Any]) -> list[str]:
     candidates = (
+        operation_target.get("del_category"),
+        operation_target.get("del_categories"),
         operation_target.get("category_name"),
         operation_target.get("category_names"),
     )
@@ -856,6 +1005,49 @@ def _structured_change_steps(
 def _points_from_data_change(data_change: dict[str, Any]) -> list[dict[str, float]]:
     points = data_change.get("points") if isinstance(data_change, dict) else None
     return _coerce_points(points if isinstance(points, list) else [])
+
+
+def _extract_scatter_requested_color(
+    *,
+    step: dict[str, Any],
+    update_spec: dict[str, Any],
+) -> str:
+    if not isinstance(step, dict):
+        step = {}
+    if not isinstance(update_spec, dict):
+        update_spec = {}
+
+    operation_target = step.get("operation_target")
+    data_change = step.get("data_change")
+    if not isinstance(operation_target, dict):
+        operation_target = {}
+    if not isinstance(data_change, dict):
+        data_change = {}
+
+    for key in ("point_color", "color", "fill", "rgb"):
+        value = data_change.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    points = data_change.get("points")
+    if isinstance(points, list):
+        for item in points:
+            if not isinstance(item, dict):
+                continue
+            for key in ("point_color", "color", "fill", "rgb"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+    for key in ("point_color", "color", "fill"):
+        value = operation_target.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    value = update_spec.get("point_color")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return ""
 
 
 def _render_structured_step_question(step: dict[str, Any]) -> str:
@@ -959,6 +1151,13 @@ def _execute_planned_steps(
             }
         )
         mapping_info = state.perception.get("mapping_info", {})
+        update_spec = state.perception.get("update_spec", {})
+        if isinstance(mapping_info, dict) and isinstance(update_spec, dict):
+            mapping_info = dict(mapping_info)
+            mapping_info["requested_point_color"] = _extract_scatter_requested_color(
+                step=step,
+                update_spec=update_spec,
+            )
         step_svg, step_png = _step_paths(str(inputs["svg_path"]), chart_type, idx, len(steps))
 
         if chart_type == "scatter":
@@ -1015,7 +1214,10 @@ def _execute_planned_steps(
     return output_image, step_logs, perception_steps, last_state, scatter_points
 
 
-def _resolve_supported_chart_type(perception: dict[str, Any]) -> str:
+def _resolve_supported_chart_type(perception: dict[str, Any], chart_type_hint: str = "") -> str:
+    hinted = str(chart_type_hint or "").strip().lower()
+    if hinted in SUPPORTED_SVG_CHART_TYPES:
+        return hinted
     chart_type = str(perception.get("chart_type") or "").lower()
     if chart_type in SUPPORTED_SVG_CHART_TYPES:
         return chart_type
@@ -1035,6 +1237,41 @@ def _resolve_supported_chart_type(perception: dict[str, Any]) -> str:
     if num_points > 0:
         return "scatter"
     return chart_type or "unknown"
+
+
+def _apply_tool_augmented_answer(
+    *,
+    output: dict[str, Any],
+    qa_question: str,
+    chart_type: str,
+    answer_data_summary: dict[str, Any],
+    tool_phase: dict[str, Any],
+    answer_llm: Any,
+) -> None:
+    augmented_path = str(tool_phase.get("augmented_image_path") or "").strip()
+    output["tool_augmented_image_path"] = augmented_path or None
+    if tool_phase.get("ok") and augmented_path:
+        output["answer_input_tool_augmented"] = {
+            "question": qa_question,
+            "chart_type": chart_type,
+            "output_image_path": augmented_path,
+            "data_summary": answer_data_summary,
+        }
+        output["answer_tool_augmented"] = answer_question(
+            qa_question=qa_question,
+            chart_type=chart_type,
+            data_summary=answer_data_summary,
+            output_image_path=augmented_path,
+            image_context_note=(
+                "The requested chart update has already been applied, and visual augmentation "
+                "has also been added to help reasoning. Answer the QA question only based on "
+                "this updated and enhanced chart."
+            ),
+            llm=answer_llm,
+        )
+        output["answer"] = output["answer_tool_augmented"]
+    else:
+        output["answer_tool_augmented"] = None
 
 
 def _validate_render_with_programmatic(

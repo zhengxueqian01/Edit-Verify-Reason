@@ -110,7 +110,8 @@ def resolve_ground_truth_svg(case_dir: str | Path, case_id: str, payload: dict[s
 
 def _extract_svg_features(svg_path: Path) -> dict[str, Any]:
     try:
-        root = ET.parse(svg_path).getroot()
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        root = ET.parse(svg_path, parser=parser).getroot()
     except Exception as exc:
         return {"error": f"parse_failed: {exc}"}
 
@@ -120,6 +121,8 @@ def _extract_svg_features(svg_path: Path) -> dict[str, Any]:
     numeric: dict[str, list[float]] = {}
     paths: Counter[str] = Counter()
     for elem in root.iter():
+        if elem.tag is ET.Comment:
+            continue
         tag = _local_name(elem.tag)
         tags[tag] += 1
         if tag == "path":
@@ -144,6 +147,9 @@ def _extract_svg_features(svg_path: Path) -> dict[str, Any]:
         "paths": paths,
         "area_top_boundary": _extract_area_top_boundary(_extract_area_paths(root)),
         "line_series": _extract_line_series(root),
+        "line_styles": _extract_line_styles(root),
+        "legend_labels": _extract_legend_labels(root),
+        "y_axis_ticks": _extract_y_axis_ticks(root),
         "scatter_points": _extract_scatter_points(root),
     }
 
@@ -180,14 +186,19 @@ def _compare_area_svgs(
     pred_boundary = pred_features.get("area_top_boundary", [])
     gt_boundary = gt_features.get("area_top_boundary", [])
     boundary_score = _polyline_similarity(pred_boundary, gt_boundary)
+    pred_labels = Counter(pred_features.get("legend_labels", []))
+    gt_labels = Counter(gt_features.get("legend_labels", []))
+    label_score = _counter_f1(pred_labels, gt_labels)
+    score = boundary_score * 0.80 + label_score * 0.20
     return {
         "ok": True,
         "chart_type": "area",
         "predicted_svg_path": str(pred_path),
         "ground_truth_svg_path": str(gt_path),
-        "score": round(boundary_score, 4),
+        "score": round(score, 4),
         "metrics": {
             "top_boundary_similarity": round(boundary_score, 4),
+            "label_score": round(label_score, 4),
         },
         "predicted_summary": _feature_summary(pred_features),
         "ground_truth_summary": _feature_summary(gt_features),
@@ -202,10 +213,23 @@ def _compare_line_svgs(
 ) -> dict[str, Any]:
     pred_lines = pred_features.get("line_series", [])
     gt_lines = gt_features.get("line_series", [])
-    line_scores = _match_polylines(pred_lines, gt_lines)
-    matched = sum(1 for score in line_scores if score >= 0.98)
-    total = max(len(pred_lines), len(gt_lines), 1)
-    score = matched / total
+    pred_labels = Counter(pred_features.get("legend_labels", []))
+    gt_labels = Counter(gt_features.get("legend_labels", []))
+    category_score = _counter_f1(pred_labels, gt_labels)
+    y_axis_score = _numeric_list_similarity(
+        pred_features.get("y_axis_ticks", []),
+        gt_features.get("y_axis_ticks", []),
+    )
+    line_scores = _match_polylines_relaxed(pred_lines, gt_lines)
+    geometry_score = sum(line_scores) / len(line_scores) if line_scores else 0.0
+    style_scores = _match_line_styles(
+        pred_lines,
+        pred_features.get("line_styles", []),
+        gt_lines,
+        gt_features.get("line_styles", []),
+    )
+    style_score = sum(style_scores) / len(style_scores) if style_scores else 0.0
+    score = category_score * 0.35 + y_axis_score * 0.30 + geometry_score * 0.20 + style_score * 0.15
     return {
         "ok": True,
         "chart_type": "line",
@@ -213,11 +237,13 @@ def _compare_line_svgs(
         "ground_truth_svg_path": str(gt_path),
         "score": round(score, 4),
         "metrics": {
-            "matched_lines": matched,
+            "category_score": round(category_score, 4),
+            "y_axis_score": round(y_axis_score, 4),
             "predicted_line_count": len(pred_lines),
             "ground_truth_line_count": len(gt_lines),
-            "line_match_ratio": round(score, 4),
-            "average_line_similarity": round(sum(line_scores) / len(line_scores), 4) if line_scores else 0.0,
+            "geometry_score": round(geometry_score, 4),
+            "average_line_similarity": round(geometry_score, 4),
+            "style_score": round(style_score, 4),
         },
         "predicted_summary": _feature_summary(pred_features),
         "ground_truth_summary": _feature_summary(gt_features),
@@ -232,9 +258,13 @@ def _compare_scatter_svgs(
 ) -> dict[str, Any]:
     pred_points = pred_features.get("scatter_points", [])
     gt_points = gt_features.get("scatter_points", [])
-    matched = _match_points(pred_points, gt_points, tolerance=1.5)
+    matches = _match_points(pred_points, gt_points, tolerance=1.5)
+    matched = len(matches)
     total = max(len(pred_points), len(gt_points), 1)
-    score = matched / total
+    point_score = matched / total
+    color_matched = sum(1 for pred, gt in matches if _normalize_color(pred.get("fill")) == _normalize_color(gt.get("fill")))
+    color_score = color_matched / matched if matched else 0.0
+    score = point_score * 0.70 + color_score * 0.30
     return {
         "ok": True,
         "chart_type": "scatter",
@@ -245,7 +275,9 @@ def _compare_scatter_svgs(
             "matched_points": matched,
             "predicted_point_count": len(pred_points),
             "ground_truth_point_count": len(gt_points),
-            "point_match_ratio": round(score, 4),
+            "point_match_ratio": round(point_score, 4),
+            "color_matched_points": color_matched,
+            "color_match_ratio": round(color_score, 4),
         },
         "predicted_summary": _feature_summary(pred_features),
         "ground_truth_summary": _feature_summary(gt_features),
@@ -422,15 +454,105 @@ def _extract_line_series(root: ET.Element) -> list[list[tuple[float, float]]]:
     return lines
 
 
-def _extract_scatter_points(root: ET.Element) -> list[tuple[float, float]]:
+def _extract_line_styles(root: ET.Element) -> list[dict[str, Any]]:
+    axes = root.find(f'.//{{{SVG_NS}}}g[@id="axes_1"]')
+    if axes is None:
+        return []
+    styles: list[dict[str, Any]] = []
+    for group in axes.findall(f'./{{{SVG_NS}}}g'):
+        group_id = str(group.get("id", ""))
+        if not group_id.startswith("line2d_"):
+            continue
+        path = group.find(f'./{{{SVG_NS}}}path')
+        if path is None:
+            continue
+        style = str(path.get("style", ""))
+        if "stroke:" not in style or "fill: none" not in style:
+            continue
+        points = _extract_path_points(path.get("d"))
+        if not points:
+            continue
+        style_map = _parse_style_map(style)
+        styles.append(
+            {
+                "stroke_width": _safe_float(style_map.get("stroke-width"), 1.0),
+                "stroke_dasharray": _normalize_dasharray(style_map.get("stroke-dasharray")),
+                "stroke_linecap": str(style_map.get("stroke-linecap") or "").strip().lower(),
+                "stroke_linejoin": str(style_map.get("stroke-linejoin") or "").strip().lower(),
+                "has_markers": _line_group_has_markers(group),
+            }
+        )
+    return styles
+
+
+def _extract_legend_labels(root: ET.Element) -> list[str]:
+    legend = root.find(f'.//{{{SVG_NS}}}g[@id="legend_1"]')
+    if legend is None:
+        return []
+    labels: list[str] = []
+    for group in legend.findall(f'./{{{SVG_NS}}}g'):
+        gid = str(group.get("id", ""))
+        if not gid.startswith("text_"):
+            continue
+        for child in list(group):
+            if child.tag is ET.Comment:
+                text = _normalize_text(child.text)
+                if text:
+                    labels.append(text)
+                break
+    return labels
+
+
+def _extract_y_axis_ticks(root: ET.Element) -> list[float]:
+    axis = root.find(f'.//{{{SVG_NS}}}g[@id="matplotlib.axis_2"]')
+    if axis is None:
+        return []
+    scale = 1.0
+    for group in axis.findall(f'./{{{SVG_NS}}}g'):
+        gid = str(group.get("id", ""))
+        if not gid.startswith("text_"):
+            continue
+        for child in list(group):
+            if child.tag is ET.Comment:
+                text = (child.text or "").strip()
+                if re.fullmatch(r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)e[+-]?\d+", text):
+                    try:
+                        scale = float(text)
+                    except ValueError:
+                        scale = 1.0
+                break
+    ticks: list[float] = []
+    for tick_group in axis.findall(f'./{{{SVG_NS}}}g'):
+        gid = str(tick_group.get("id", ""))
+        if not gid.startswith("ytick_"):
+            continue
+        for group in tick_group.findall(f'./{{{SVG_NS}}}g'):
+            child_id = str(group.get("id", ""))
+            if not child_id.startswith("text_"):
+                continue
+            for child in list(group):
+                if child.tag is ET.Comment:
+                    raw = (child.text or "").strip()
+                    nums = _extract_numbers(raw)
+                    if nums:
+                        ticks.append(nums[0] * scale)
+                    break
+            break
+    return ticks
+
+
+def _extract_scatter_points(root: ET.Element) -> list[dict[str, Any]]:
     axes = root.find(f'.//{{{SVG_NS}}}g[@id="axes_1"]')
     if axes is None:
         return []
 
-    points: list[tuple[float, float]] = []
-    for group_id in ("PathCollection_1", "PathCollection_update"):
-        group = axes.find(f'.//{{{SVG_NS}}}g[@id="{group_id}"]')
-        if group is None:
+    points: list[dict[str, Any]] = []
+    for group in axes.findall(f'.//{{{SVG_NS}}}g'):
+        group_id = str(group.get("id", ""))
+        if not (
+            group_id == "PathCollection_update"
+            or group_id.startswith("PathCollection_")
+        ):
             continue
         for use_elem in group.findall(f'.//{{{SVG_NS}}}use'):
             x_attr = use_elem.get("x")
@@ -438,7 +560,13 @@ def _extract_scatter_points(root: ET.Element) -> list[tuple[float, float]]:
             if not x_attr or not y_attr:
                 continue
             try:
-                points.append((float(x_attr), float(y_attr)))
+                points.append(
+                    {
+                        "x": float(x_attr),
+                        "y": float(y_attr),
+                        "fill": _extract_element_fill(use_elem),
+                    }
+                )
             except ValueError:
                 continue
         for circle in group.findall(f'.//{{{SVG_NS}}}circle'):
@@ -447,10 +575,64 @@ def _extract_scatter_points(root: ET.Element) -> list[tuple[float, float]]:
             if not cx_attr or not cy_attr:
                 continue
             try:
-                points.append((float(cx_attr), float(cy_attr)))
+                points.append(
+                    {
+                        "x": float(cx_attr),
+                        "y": float(cy_attr),
+                        "fill": _extract_element_fill(circle),
+                    }
+                )
             except ValueError:
                 continue
     return points
+
+
+def _extract_element_fill(elem: ET.Element) -> str:
+    fill = str(elem.get("fill") or "").strip()
+    if fill and fill.lower() != "none":
+        return fill.lower()
+    style_map = _parse_style_map(str(elem.get("style") or ""))
+    style_fill = str(style_map.get("fill") or "").strip()
+    if style_fill and style_fill.lower() != "none":
+        return style_fill.lower()
+    return ""
+
+
+def _normalize_color(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _parse_style_map(style: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in str(style or "").split(";"):
+        if ":" not in item:
+            continue
+        key, value = item.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key and value:
+            out[key] = value
+    return out
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_dasharray(value: Any) -> tuple[float, ...]:
+    numbers = _extract_numbers(str(value or ""))
+    return tuple(round(item, 3) for item in numbers)
+
+
+def _line_group_has_markers(group: ET.Element) -> bool:
+    for child in list(group):
+        tag = _local_name(child.tag)
+        if tag in {"use", "circle"}:
+            return True
+    return False
 
 
 def _polyline_similarity(left: list[tuple[float, float]], right: list[tuple[float, float]]) -> float:
@@ -510,22 +692,118 @@ def _match_polylines(
     return scores
 
 
-def _match_points(
-    left: list[tuple[float, float]],
-    right: list[tuple[float, float]],
-    *,
-    tolerance: float,
-) -> int:
+def _match_polylines_relaxed(
+    left: list[list[tuple[float, float]]],
+    right: list[list[tuple[float, float]]],
+) -> list[float]:
     if not left or not right:
-        return 0
+        return []
     used_right: set[int] = set()
-    matched = 0
-    for x1, y1 in left:
+    scores: list[float] = []
+    for left_line in left:
         best_idx = None
-        best_distance = None
-        for idx, (x2, y2) in enumerate(right):
+        best_score = -1.0
+        for idx, right_line in enumerate(right):
             if idx in used_right:
                 continue
+            current = _polyline_similarity_relaxed(left_line, right_line)
+            if current > best_score:
+                best_score = current
+                best_idx = idx
+        if best_idx is not None:
+            used_right.add(best_idx)
+            scores.append(best_score)
+    return scores
+
+
+def _match_line_styles(
+    left_lines: list[list[tuple[float, float]]],
+    left_styles: list[dict[str, Any]],
+    right_lines: list[list[tuple[float, float]]],
+    right_styles: list[dict[str, Any]],
+) -> list[float]:
+    if not left_lines or not right_lines or not left_styles or not right_styles:
+        return []
+    used_right: set[int] = set()
+    scores: list[float] = []
+    overlap = min(len(left_lines), len(left_styles))
+    for idx in range(overlap):
+        left_line = left_lines[idx]
+        left_style = left_styles[idx]
+        best_idx = None
+        best_geom = -1.0
+        for right_idx, right_line in enumerate(right_lines):
+            if right_idx in used_right or right_idx >= len(right_styles):
+                continue
+            current = _polyline_similarity_relaxed(left_line, right_line)
+            if current > best_geom:
+                best_geom = current
+                best_idx = right_idx
+        if best_idx is None:
+            continue
+        used_right.add(best_idx)
+        scores.append(_line_style_similarity(left_style, right_styles[best_idx]))
+    return scores
+
+
+def _line_style_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
+    width_score = _numeric_list_similarity(
+        [_safe_float(left.get("stroke_width"), 1.0)],
+        [_safe_float(right.get("stroke_width"), 1.0)],
+    )
+    left_dash = tuple(left.get("stroke_dasharray") or ())
+    right_dash = tuple(right.get("stroke_dasharray") or ())
+    if not left_dash and not right_dash:
+        dash_score = 1.0
+    else:
+        dash_score = _numeric_list_similarity(list(left_dash), list(right_dash))
+    cap_score = 1.0 if str(left.get("stroke_linecap") or "") == str(right.get("stroke_linecap") or "") else 0.0
+    join_score = 1.0 if str(left.get("stroke_linejoin") or "") == str(right.get("stroke_linejoin") or "") else 0.0
+    marker_score = 1.0 if bool(left.get("has_markers")) == bool(right.get("has_markers")) else 0.0
+    return width_score * 0.35 + dash_score * 0.35 + cap_score * 0.10 + join_score * 0.10 + marker_score * 0.10
+
+
+def _polyline_similarity_relaxed(
+    left: list[tuple[float, float]],
+    right: list[tuple[float, float]],
+) -> float:
+    if not left and not right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    overlap = min(len(left), len(right))
+    if overlap == 0:
+        return 0.0
+    left_y = [point[1] for point in left[:overlap]]
+    right_y = [point[1] for point in right[:overlap]]
+    left_norm = _normalize_series(left_y)
+    right_norm = _normalize_series(right_y)
+    diffs = [min(abs(a - b), 1.0) for a, b in zip(left_norm, right_norm)]
+    base = 1.0 - (sum(diffs) / len(diffs) if diffs else 1.0)
+    length_penalty = abs(len(left) - len(right)) / max(len(left), len(right), 1)
+    return max(0.0, base * (1.0 - 0.2 * length_penalty))
+
+
+def _match_points(
+    left: list[dict[str, Any]],
+    right: list[dict[str, Any]],
+    *,
+    tolerance: float,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    if not left or not right:
+        return []
+    used_right: set[int] = set()
+    matched: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for left_point in left:
+        x1 = _safe_float(left_point.get("x"), float("nan"))
+        y1 = _safe_float(left_point.get("y"), float("nan"))
+        best_idx = None
+        best_distance = None
+        for idx, right_point in enumerate(right):
+            if idx in used_right:
+                continue
+            x2 = _safe_float(right_point.get("x"), float("nan"))
+            y2 = _safe_float(right_point.get("y"), float("nan"))
             distance = math.hypot(x1 - x2, y1 - y2)
             if distance > tolerance:
                 continue
@@ -534,5 +812,5 @@ def _match_points(
                 best_idx = idx
         if best_idx is not None:
             used_right.add(best_idx)
-            matched += 1
+            matched.append((left_point, right[best_idx]))
     return matched

@@ -5,6 +5,7 @@ import math
 import os
 import re
 import xml.etree.ElementTree as ET
+from collections import Counter
 from typing import Any
 
 SVG_NS = "http://www.w3.org/2000/svg"
@@ -60,6 +61,7 @@ def perceive_svg(svg_path: str | None, question: str | None = None, llm: Any | N
     x_ticks = _parse_axis_ticks(root, content, axis_id="matplotlib.axis_1", is_x=True)
     y_ticks = _parse_axis_ticks(root, content, axis_id="matplotlib.axis_2", is_x=False)
     existing_points = _extract_scatter_points(root)
+    existing_point_colors = _extract_scatter_point_colors(root)
     point_size_svg, point_marker = _extract_point_size(root)
     x_labels = _extract_x_tick_labels(root, content)
     bars = _extract_bars(root, x_labels)
@@ -131,6 +133,8 @@ def perceive_svg(svg_path: str | None, question: str | None = None, llm: Any | N
         "x_ticks": x_ticks,
         "y_ticks": y_ticks,
         "existing_points_svg": existing_points,
+        "existing_point_colors": existing_point_colors,
+        "dominant_point_color": _dominant_color(existing_point_colors),
         "point_size_svg": point_size_svg,
         "point_marker": point_marker,
         "x_labels": x_labels,
@@ -313,20 +317,17 @@ def _extract_scatter_points(root: ET.Element) -> list[tuple[float, float]]:
     if axes is None:
         return []
 
-    path_collection = axes.find(f'.//{{{SVG_NS}}}g[@id="PathCollection_1"]')
-    if path_collection is None:
-        return []
-
     points: list[tuple[float, float]] = []
-    for use_elem in path_collection.findall(f'.//{{{SVG_NS}}}use'):
-        x_attr = use_elem.get("x")
-        y_attr = use_elem.get("y")
-        if not x_attr or not y_attr:
-            continue
-        try:
-            points.append((float(x_attr), float(y_attr)))
-        except ValueError:
-            continue
+    for path_collection in _iter_path_collections(axes):
+        for use_elem in path_collection.findall(f'.//{{{SVG_NS}}}use'):
+            x_attr = use_elem.get("x")
+            y_attr = use_elem.get("y")
+            if not x_attr or not y_attr:
+                continue
+            try:
+                points.append((float(x_attr), float(y_attr)))
+            except ValueError:
+                continue
     return points
 
 
@@ -334,10 +335,11 @@ def _extract_point_size(root: ET.Element) -> tuple[float | None, str | None]:
     axes = root.find(f'.//{{{SVG_NS}}}g[@id="axes_1"]')
     if axes is None:
         return None, None
-    path_collection = axes.find(f'.//{{{SVG_NS}}}g[@id="PathCollection_1"]')
-    if path_collection is None:
-        return None, None
-    use_elem = path_collection.find(f'.//{{{SVG_NS}}}use')
+    use_elem = None
+    for path_collection in _iter_path_collections(axes):
+        use_elem = path_collection.find(f'.//{{{SVG_NS}}}use')
+        if use_elem is not None:
+            break
     if use_elem is None:
         return None, None
     href = use_elem.get(f'{{{XLINK_NS}}}href')
@@ -363,6 +365,39 @@ def _extract_point_size(root: ET.Element) -> tuple[float | None, str | None]:
     if diameter <= 0:
         return None, None
     return diameter, "circle"
+
+
+def _extract_scatter_point_colors(root: ET.Element) -> list[str]:
+    axes = root.find(f'.//{{{SVG_NS}}}g[@id="axes_1"]')
+    if axes is None:
+        return []
+
+    colors = []
+    for path_collection in _iter_path_collections(axes):
+        for use_elem in path_collection.findall(f'.//{{{SVG_NS}}}use'):
+            fill = _extract_element_fill(use_elem)
+            if fill:
+                colors.append(fill)
+    if colors:
+        return colors
+
+    for circle in axes.findall(f'.//{{{SVG_NS}}}circle'):
+        fill = _extract_element_fill(circle)
+        if fill:
+            colors.append(fill)
+    return colors
+
+
+def _iter_path_collections(axes: ET.Element) -> list[ET.Element]:
+    collections: list[tuple[int, ET.Element]] = []
+    for group in axes.findall(f'.//{{{SVG_NS}}}g'):
+        gid = str(group.get("id") or "")
+        match = re.fullmatch(r"PathCollection_(\d+)", gid)
+        if not match:
+            continue
+        collections.append((int(match.group(1)), group))
+    collections.sort(key=lambda item: item[0])
+    return [group for _, group in collections]
 
 
 def _extract_bars(root: ET.Element, labels: list[tuple[float, str]]) -> list[dict[str, Any]]:
@@ -466,8 +501,26 @@ def _closest_label(x_value: float, labels: list[tuple[float, str]]) -> str | Non
 def _extract_fill_color(style: str) -> str:
     match = re.search(r"fill:\s*(#[0-9a-fA-F]{6})", style)
     if match:
-        return match.group(1)
+        return match.group(1).lower()
     return "#1f77b4"
+
+
+def _extract_element_fill(elem: ET.Element) -> str:
+    fill_attr = str(elem.get("fill") or "").strip().lower()
+    if re.fullmatch(r"#[0-9a-f]{3}(?:[0-9a-f]{3})?", fill_attr):
+        return fill_attr
+
+    style = str(elem.get("style") or "")
+    match = re.search(r"fill:\s*(#[0-9a-fA-F]{3,6})", style)
+    if match:
+        return match.group(1).lower()
+    return ""
+
+
+def _dominant_color(colors: list[str]) -> str:
+    if not colors:
+        return ""
+    return Counter(colors).most_common(1)[0][0]
 
 
 def _count_line_series(root: ET.Element) -> int:

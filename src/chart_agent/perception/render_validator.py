@@ -62,12 +62,76 @@ def validate_render(
         }
 
     merged_issues = issues + llm_result.get("issues", [])
+    softened = _soften_uncertainty_only_failure(
+        chart_type=chart_type,
+        llm_ok=bool(llm_result.get("ok", base_ok)),
+        issues=merged_issues,
+        confidence=float(llm_result.get("confidence", 0.5)),
+    )
     return {
-        "ok": bool(llm_result.get("ok", base_ok)),
-        "confidence": float(llm_result.get("confidence", 0.5)),
+        "ok": softened["ok"],
+        "confidence": softened["confidence"],
         "issues": merged_issues,
         "llm_raw": llm_result.get("llm_raw"),
     }
+
+
+def _soften_uncertainty_only_failure(
+    *,
+    chart_type: str,
+    llm_ok: bool,
+    issues: list[str],
+    confidence: float,
+) -> dict[str, Any]:
+    if llm_ok:
+        return {"ok": True, "confidence": confidence}
+    lowered = [str(issue or "").strip().lower() for issue in issues if str(issue or "").strip()]
+    if not lowered:
+        return {"ok": llm_ok, "confidence": confidence}
+    if str(chart_type or "").strip().lower() not in {"line", "area"}:
+        return {"ok": llm_ok, "confidence": confidence}
+
+    uncertainty_markers = (
+        "cannot verify",
+        "not confirmable",
+        "difficult to verify",
+        "no data labels",
+        "no point labels",
+        "no visible annotations",
+        "no explicit annotation",
+        "image alone",
+        "visual inspection alone",
+        "lacks numerical precision",
+        "exact value",
+        "exact values",
+        "precise value",
+        "precise values",
+        "cannot be confidently verified",
+        "too coarse",
+    )
+    contradiction_markers = (
+        "not added",
+        "not present",
+        "not visible",
+        "still shows",
+        "still contains",
+        "appears unchanged",
+        "unchanged from",
+        "does not visually reflect",
+        "does not match",
+        "contradict",
+        "corrupted",
+        "overlapping",
+        "garbled",
+        "no new line",
+        "no visual evidence",
+        "not plotted",
+    )
+    has_uncertainty = any(any(marker in issue for marker in uncertainty_markers) for issue in lowered)
+    has_contradiction = any(any(marker in issue for marker in contradiction_markers) for issue in lowered)
+    if has_uncertainty and not has_contradiction:
+        return {"ok": True, "confidence": max(confidence, 0.45)}
+    return {"ok": llm_ok, "confidence": confidence}
 
 
 def _basic_image_stats(image_path: str) -> tuple[int, int, bool]:

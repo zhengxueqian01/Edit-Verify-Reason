@@ -13,18 +13,20 @@ def answer_question(
     chart_type: str,
     data_summary: dict[str, Any],
     output_image_path: str | None,
+    image_context_note: str | None = None,
     llm: Any,
 ) -> dict[str, Any]:
     cluster_result = data_summary.get("cluster_result")
+    cluster_params = data_summary.get("cluster_params")
     prompt_text = (
         "Return ONLY valid JSON. Do not include any extra text.\n"
         "Schema: {\"answer\": string, \"confidence\": number between 0 and 1, \"reason\": [string]}\n"
-        # "Use the image to answer the question.\n"
-        "Rule: Do not infer year from sparse x-axis tick labels only; infer the exact year from point position across the full yearly sequence.\n"
+        "Use the provided image to answer the QA question only.\n"
+        f"{_image_context_prompt_line(image_context_note)}"
         f"QA Question: {qa_question}\n"
         f"Chart type: {chart_type}\n"
         f"Image path (for reference only): {output_image_path}\n"
-        # f"Data summary: {json.dumps(data_summary, ensure_ascii=False)}"
+        f"{_cluster_prompt_block(cluster_params)}"
     )
     # print(qa_question)
 
@@ -72,6 +74,30 @@ def answer_question(
     if cluster_result:
         payload["dbscan_result"] = cluster_result
     return _normalize_answer_payload(payload)
+
+
+def _cluster_prompt_block(cluster_params: Any) -> str:
+    if not isinstance(cluster_params, dict) or not cluster_params:
+        return ""
+    compact = {key: value for key, value in {
+        "algorithm": cluster_params.get("algorithm"),
+        "mode": cluster_params.get("mode"),
+        "eps": cluster_params.get("eps"),
+        "min_samples": cluster_params.get("min_samples"),
+        "source": cluster_params.get("source"),
+    }.items() if value is not None}
+    return (
+        "Cluster Counting Rule: "
+        "when answering scatter-cluster questions, follow this clustering configuration exactly.\n"
+        f"Cluster Parameters: {json.dumps(compact, ensure_ascii=False)}\n"
+    )
+
+
+def _image_context_prompt_line(image_context_note: str | None) -> str:
+    note = str(image_context_note or "").strip()
+    if not note:
+        return ""
+    return f"Image context: {note}\n"
 
 
 def _normalize_answer_payload(payload: dict[str, Any]) -> dict[str, Any]:

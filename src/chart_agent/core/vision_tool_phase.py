@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import json
 import math
 import re
@@ -8,6 +9,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from chart_agent.core.clusterer import resolve_dbscan_params
+from chart_agent.perception.svg_perceiver import perceive_svg
 from chart_agent.perception.svg_renderer import render_svg_to_png
 
 TOOL_SPECS: list[dict[str, Any]] = [
@@ -112,6 +115,8 @@ def run_visual_tool_phase(
         }
 
     width, height = _svg_canvas_size(svg)
+    perception = perceive_svg(str(svg), question=question, llm=None)
+    scatter_cluster_context = _build_scatter_cluster_context(perception, question)
     plan = _plan_tool_calls(
         question=question,
         chart_type=chart_type,
@@ -133,8 +138,19 @@ def run_visual_tool_phase(
         }
 
     out_svg = svg.with_name(f"{svg.stem}_tool_aug.svg")
-    exec_result = _execute_svg_tool_calls(svg, out_svg, tool_calls, max_tool_calls=max_tool_calls)
+    exec_result = _execute_svg_tool_calls(
+        svg,
+        out_svg,
+        tool_calls,
+        max_tool_calls=max_tool_calls,
+        scatter_cluster_context=scatter_cluster_context,
+    )
     exec_result["planner"] = plan
+
+    if not exec_result.get("ok"):
+        exec_result["augmented_svg_path"] = None
+        exec_result["augmented_image_path"] = (str(base_image) if base_image_ok else None)
+        return exec_result
 
     out_png = out_svg.with_suffix(".png")
     try:
@@ -170,7 +186,7 @@ def _plan_tool_calls(
         "- Use SVG coordinates only.\n"
         f"- Canvas size is width={canvas_width:.2f}, height={canvas_height:.2f}.\n"
         "- Tool selection by chart type:\n"
-        "  * scatter: use isolate_color_topology for one target color, isolate_all_color_topologies for all clusters, and use add_point/draw_line/highlight_rect only as light local guides.\n"
+        "  * scatter: default to isolate_all_color_topologies for cluster/topology reading across all colors; use isolate_color_topology only when a single target color is explicitly required; use add_point/draw_line/highlight_rect only as light local guides.\n"
         "  * line: use zoom_and_highlight_intersection for counting or locating crossings between two named lines, and use add_point/draw_line/highlight_rect only as light local guides.\n"
         "  * area: use draw_global_peak_crosshairs for absolute/global highest-peak questions, and use add_point/draw_line/highlight_rect only as light local guides.\n"
         "  * bar/unknown/other: do not use scatter-only, line-only, or area-only tools unless the visual structure truly matches that tool.\n"
@@ -199,9 +215,17 @@ def _plan_tool_calls(
 
     payload = _safe_json_loads(content)
     if not payload:
-        return {"tool_calls": [], "notes": "planner_non_json", "llm_success": False, "llm_raw": content}
+        calls = _default_line_intersection_tool_calls(chart_type=chart_type, question=question)
+        return {
+            "tool_calls": calls,
+            "notes": "planner_non_json",
+            "llm_success": False,
+            "llm_raw": content,
+        }
     raw_calls = payload.get("tool_calls", [])
     calls, rejected = _coerce_tool_calls(raw_calls, canvas_width=canvas_width, canvas_height=canvas_height)
+    calls = _prefer_multi_color_scatter_tools(chart_type=chart_type, question=question, tool_calls=calls)
+    calls = _prefer_line_intersection_tools(chart_type=chart_type, question=question, tool_calls=calls)
     return {
         "qa_understanding": str(payload.get("qa_understanding") or ""),
         "tool_calls": calls,
@@ -210,6 +234,157 @@ def _plan_tool_calls(
         "notes": str(payload.get("notes") or ""),
         "llm_success": True,
         "llm_raw": content,
+    }
+
+
+def _prefer_multi_color_scatter_tools(
+    *,
+    chart_type: str,
+    question: str,
+    tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if str(chart_type or "").strip().lower() != "scatter":
+        return tool_calls
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return tool_calls
+    keep_single_color = _question_explicitly_mentions_color(question)
+
+    has_all_colors = any(str(call.get("tool") or "").strip() == "isolate_all_color_topologies" for call in tool_calls)
+    if has_all_colors:
+        return tool_calls if keep_single_color else _remove_single_color_scatter_calls(tool_calls)
+
+    if keep_single_color:
+        return tool_calls
+
+    updated = _remove_single_color_scatter_calls(tool_calls)
+    had_single_color = any(str(call.get("tool") or "").strip() == "isolate_color_topology" for call in tool_calls)
+    if had_single_color:
+        return [{"tool": "isolate_all_color_topologies", "args": {}}] + updated
+    return updated
+
+
+def _remove_single_color_scatter_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    updated: list[dict[str, Any]] = []
+    for call in tool_calls:
+        tool = str(call.get("tool") or "").strip()
+        if tool == "isolate_color_topology":
+            continue
+        updated.append(call)
+    return updated
+
+
+def _prefer_line_intersection_tools(
+    *,
+    chart_type: str,
+    question: str,
+    tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if str(chart_type or "").strip().lower() != "line":
+        return tool_calls
+    fallback = _default_line_intersection_tool_calls(chart_type=chart_type, question=question)
+    if not fallback:
+        return tool_calls
+    for call in tool_calls:
+        if str(call.get("tool") or "").strip() == "zoom_and_highlight_intersection":
+            return tool_calls
+    return fallback + tool_calls
+
+
+def _default_line_intersection_tool_calls(*, chart_type: str, question: str) -> list[dict[str, Any]]:
+    if str(chart_type or "").strip().lower() != "line":
+        return []
+    labels = _extract_line_labels_from_intersection_question(question)
+    if not labels:
+        return []
+    return [
+        {
+            "tool": "zoom_and_highlight_intersection",
+            "args": {"line_A": labels[0], "line_B": labels[1]},
+        }
+    ]
+
+
+def _extract_line_labels_from_intersection_question(question: str) -> tuple[str, str] | None:
+    text = str(question or "").strip().rstrip("?.")
+    if not text:
+        return None
+    patterns = [
+        r"lines?\s+for\s+(.+?)\s+and\s+(.+?)\s+(?:intersect|intersections|cross|crossing)\b",
+        r"between\s+(.+?)\s+and\s+(.+?)\s*,?\s*how many times do (?:the )?lines?\s+(?:intersect|cross)\b",
+        r"how many times do\s+(.+?)\s+and\s+(.+?)\s+(?:intersect|cross)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        left = _clean_line_question_label(match.group(1))
+        right = _clean_line_question_label(match.group(2))
+        if left and right and left.lower() != right.lower():
+            return left, right
+    return None
+
+
+def _clean_line_question_label(label: str) -> str:
+    cleaned = str(label or "").strip().strip("\"'` ")
+    cleaned = re.sub(r"^(the|line|lines|category|series)\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+(line|lines|category|series)$", "", cleaned, flags=re.IGNORECASE)
+    return _short_text(cleaned.strip(), 64)
+
+
+def _question_explicitly_mentions_color(question: str) -> bool:
+    text = str(question or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if re.search(r"#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?\b", text):
+        return True
+    for aliases in _question_color_aliases().values():
+        for alias in aliases:
+            if re.search(r"[a-z]", alias):
+                if re.search(rf"\b{re.escape(alias.lower())}\b", lowered):
+                    return True
+            elif alias in text:
+                return True
+    return False
+
+
+def _question_color_aliases() -> dict[str, set[str]]:
+    return {
+        "red": {"red", "reds", "红", "红色"},
+        "blue": {"blue", "blues", "蓝", "蓝色"},
+        "green": {"green", "greens", "绿", "绿色"},
+        "orange": {"orange", "oranges", "橙", "橙色", "橘", "橘色"},
+        "yellow": {"yellow", "yellows", "黄", "黄色"},
+        "purple": {"purple", "purples", "violet", "violets", "紫", "紫色"},
+        "pink": {"pink", "pinks", "粉", "粉色"},
+        "black": {"black", "blacks", "黑", "黑色"},
+        "gray": {"gray", "grey", "grays", "greys", "灰", "灰色"},
+        "white": {"white", "whites", "白", "白色"},
+        "cyan": {"cyan", "cyans", "teal", "青", "青色"},
+        "brown": {"brown", "browns", "棕", "棕色", "褐", "褐色"},
+    }
+
+
+def _build_scatter_cluster_context(perception: dict[str, Any], question: str) -> dict[str, Any] | None:
+    if not isinstance(perception, dict):
+        return None
+    mapping_info = perception.get("mapping_info")
+    if not isinstance(mapping_info, dict):
+        return None
+    x_ticks = mapping_info.get("x_ticks")
+    y_ticks = mapping_info.get("y_ticks")
+    if not isinstance(x_ticks, list) or not isinstance(y_ticks, list) or len(x_ticks) < 2 or len(y_ticks) < 2:
+        return None
+    eps, min_samples = resolve_dbscan_params(
+        question,
+        default_eps=6.0,
+        default_min_samples=3,
+    )
+    return {
+        "x_ticks": x_ticks,
+        "y_ticks": y_ticks,
+        "eps": eps,
+        "min_samples": min_samples,
     }
 
 
@@ -404,8 +579,10 @@ def _execute_svg_tool_calls(
     tool_calls: list[dict[str, Any]],
     *,
     max_tool_calls: int,
+    scatter_cluster_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    tree = ET.parse(svg_path)
+    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+    tree = ET.parse(svg_path, parser=parser)
     root = tree.getroot()
     ns = _svg_ns(root)
     canvas_w, canvas_h = _svg_canvas_size(svg_path)
@@ -426,9 +603,24 @@ def _execute_svg_tool_calls(
             elif tool == "highlight_rect":
                 _svg_highlight_rect(overlay, ns, args, canvas_w, canvas_h)
             elif tool == "isolate_color_topology":
-                _svg_isolate_color_topology(root, overlay, ns, args, canvas_w, canvas_h)
+                _svg_isolate_color_topology(
+                    root,
+                    overlay,
+                    ns,
+                    args,
+                    canvas_w,
+                    canvas_h,
+                    scatter_cluster_context=scatter_cluster_context,
+                )
             elif tool == "isolate_all_color_topologies":
-                _svg_isolate_all_color_topologies(root, overlay, ns, canvas_w, canvas_h)
+                _svg_isolate_all_color_topologies(
+                    root,
+                    overlay,
+                    ns,
+                    canvas_w,
+                    canvas_h,
+                    scatter_cluster_context=scatter_cluster_context,
+                )
             elif tool == "draw_global_peak_crosshairs":
                 _svg_draw_global_peak_crosshairs(root, overlay, ns, canvas_w, canvas_h)
             elif tool == "zoom_and_highlight_intersection":
@@ -572,6 +764,7 @@ def _svg_isolate_color_topology(
     args: dict[str, Any],
     w: float,
     h: float,
+    scatter_cluster_context: dict[str, Any] | None = None,
 ) -> None:
     target_selector = _normalize_color_selector(args.get("target_color"))
     if not target_selector:
@@ -600,7 +793,10 @@ def _svg_isolate_color_topology(
     if not target_points:
         raise ValueError(f"no points found for target color: {target_selector}")
 
-    labels = _dbscan_points(target_points, eps=_auto_cluster_eps(target_points), min_samples=1)
+    labels = _cluster_svg_points(
+        target_points,
+        scatter_cluster_context=scatter_cluster_context,
+    )
     clusters = _group_points_by_label(target_points, labels)
     hull_color = "#ff3b30"
     for cluster_points in clusters:
@@ -613,6 +809,7 @@ def _svg_isolate_all_color_topologies(
     ns: str,
     w: float,
     h: float,
+    scatter_cluster_context: dict[str, Any] | None = None,
 ) -> None:
     points = _extract_colored_scatter_points(root, ns)
     if not points:
@@ -644,7 +841,10 @@ def _svg_isolate_all_color_topologies(
         cluster_points = [(float(item["x"]), float(item["y"])) for item in color_points]
         if not cluster_points:
             continue
-        labels = _dbscan_points(cluster_points, eps=_auto_cluster_eps(cluster_points), min_samples=1)
+        labels = _cluster_svg_points(
+            cluster_points,
+            scatter_cluster_context=scatter_cluster_context,
+        )
         clusters = _group_points_by_label(cluster_points, labels)
         for cluster in clusters:
             if not cluster:
@@ -739,6 +939,9 @@ def _svg_zoom_and_highlight_intersection(
     if len(points_a) < 2 or len(points_b) < 2:
         raise ValueError("line geometry not found")
 
+    _svg_highlight_polyline(overlay, ns, points_a, "#ff2d55", width=3.2, label=line_a)
+    _svg_highlight_polyline(overlay, ns, points_b, "#007aff", width=3.2, label=line_b)
+
     intersections = _polyline_intersections(points_a, points_b)
     if not intersections:
         raise ValueError("no intersections found")
@@ -766,6 +969,39 @@ def _svg_zoom_and_highlight_intersection(
             w,
             h,
         )
+
+
+def _svg_highlight_polyline(
+    overlay: ET.Element,
+    ns: str,
+    points: list[tuple[float, float]],
+    color: str,
+    *,
+    width: float,
+    label: str,
+) -> None:
+    if len(points) < 2:
+        return
+    path_d = " ".join(
+        [f"M {points[0][0]:.6f} {points[0][1]:.6f}"]
+        + [f"L {x:.6f} {y:.6f}" for x, y in points[1:]]
+    )
+    ET.SubElement(
+        overlay,
+        _nstag(ns, "path"),
+        {
+            "d": path_d,
+            "fill": "none",
+            "stroke": color,
+            "stroke-width": f"{width:.3f}",
+            "stroke-linecap": "round",
+            "stroke-linejoin": "round",
+            "opacity": "0.92",
+        },
+    )
+    if label:
+        x, y = points[-1]
+        _svg_text(overlay, ns, x + 4.0, y - 4.0, label, color, 9.5)
 
 
 def _draw_cluster_outline(
@@ -927,8 +1163,7 @@ def _extract_colored_scatter_points(root: ET.Element, ns: str) -> list[dict[str,
         axes = root
 
     points: list[dict[str, Any]] = []
-    path_collection = axes.find(f".//{_nstag(ns, 'g')}[@id='PathCollection_1']")
-    if path_collection is not None:
+    for path_collection in _iter_scatter_path_collections(axes, ns):
         for use_elem in path_collection.findall(f".//{_nstag(ns, 'use')}"):
             x_attr = use_elem.get("x")
             y_attr = use_elem.get("y")
@@ -964,6 +1199,19 @@ def _extract_colored_scatter_points(root: ET.Element, ns: str) -> list[dict[str,
         except ValueError:
             continue
     return points
+
+
+def _iter_scatter_path_collections(axes: ET.Element, ns: str) -> list[ET.Element]:
+    collections: list[tuple[int, ET.Element]] = []
+    for group in axes.findall(f".//{_nstag(ns, 'g')}"):
+        gid = str(group.get("id") or "")
+        match = re.fullmatch(r"PathCollection_(\d+|update)", gid)
+        if not match:
+            continue
+        order = 10**9 if match.group(1) == "update" else int(match.group(1))
+        collections.append((order, group))
+    collections.sort(key=lambda item: item[0])
+    return [group for _, group in collections]
 
 
 def _extract_area_geometry_points(root: ET.Element, ns: str) -> list[tuple[float, float]]:
@@ -1020,10 +1268,18 @@ def _extract_text_label_from_group(group: ET.Element, content: str) -> str | Non
     gid = str(group.get("id") or "")
     if not gid.startswith("text_"):
         return None
-    pattern = rf'<g\s+id="{re.escape(gid)}"[^>]*>.*?<!--\s*(.*?)\s*-->'
+    for node in group.iter():
+        if node.tag is ET.Comment:
+            comment_text = html.unescape(str(node.text or "")).strip()
+            if comment_text:
+                return comment_text
+        text = html.unescape(str(node.text or "")).strip()
+        if text:
+            return text
+    pattern = rf'<(?:\w+:)?g\s+id="{re.escape(gid)}"[^>]*>.*?<!--\s*(.*?)\s*-->'
     match = re.search(pattern, content, re.DOTALL)
     if match:
-        return match.group(1).strip()
+        return html.unescape(match.group(1)).strip()
     return None
 
 
@@ -1293,6 +1549,60 @@ def _auto_cluster_eps(points: list[tuple[float, float]]) -> float:
     nearest.sort()
     median = nearest[len(nearest) // 2]
     return _clamp(median * 1.8, 6.0, 28.0)
+
+
+def _cluster_svg_points(
+    points_svg: list[tuple[float, float]],
+    *,
+    scatter_cluster_context: dict[str, Any] | None,
+) -> list[int]:
+    if not points_svg:
+        return []
+    if not isinstance(scatter_cluster_context, dict):
+        return _dbscan_points(points_svg, eps=_auto_cluster_eps(points_svg), min_samples=1)
+
+    x_ticks = scatter_cluster_context.get("x_ticks")
+    y_ticks = scatter_cluster_context.get("y_ticks")
+    eps = float(scatter_cluster_context.get("eps") or 6.0)
+    min_samples = int(scatter_cluster_context.get("min_samples") or 3)
+    if not isinstance(x_ticks, list) or not isinstance(y_ticks, list) or len(x_ticks) < 2 or len(y_ticks) < 2:
+        return _dbscan_points(points_svg, eps=_auto_cluster_eps(points_svg), min_samples=1)
+
+    data_points = [
+        (
+            _pixel_to_data(px, x_ticks),
+            _pixel_to_data(py, y_ticks),
+        )
+        for px, py in points_svg
+    ]
+    return _dbscan_points(data_points, eps=eps, min_samples=min_samples)
+
+
+def _pixel_to_data(pixel: float, ticks: list[tuple[float, float]]) -> float:
+    ticks_sorted = sorted(ticks, key=lambda item: item[0])
+    for idx in range(len(ticks_sorted) - 1):
+        p1, d1 = ticks_sorted[idx]
+        p2, d2 = ticks_sorted[idx + 1]
+        if min(p1, p2) <= pixel <= max(p1, p2):
+            if p2 == p1:
+                return d1
+            ratio = (pixel - p1) / (p2 - p1)
+            return d1 + ratio * (d2 - d1)
+
+    p1, d1 = ticks_sorted[0]
+    p2, d2 = ticks_sorted[1]
+    if pixel < min(p1, p2):
+        if p2 == p1:
+            return d1
+        ratio = (pixel - p1) / (p2 - p1)
+        return d1 + ratio * (d2 - d1)
+
+    p1, d1 = ticks_sorted[-2]
+    p2, d2 = ticks_sorted[-1]
+    if p2 == p1:
+        return d2
+    ratio = (pixel - p1) / (p2 - p1)
+    return d1 + ratio * (d2 - d1)
 
 
 def _group_points_by_label(points: list[tuple[float, float]], labels: list[int]) -> list[list[tuple[float, float]]]:

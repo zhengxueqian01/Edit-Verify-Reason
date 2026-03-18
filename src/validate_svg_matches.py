@@ -73,7 +73,11 @@ def resolve_output_path(raw: str, *, pred_root: Path | None) -> Path | None:
         return out_path
     if pred_root is None:
         return None
-    return (SVG_MATCH_ROOT / f"{pred_root.name}.json").resolve()
+    try:
+        relative_pred_root = pred_root.resolve().relative_to(PREDICTION_ROOT.resolve())
+        return (SVG_MATCH_ROOT / relative_pred_root).with_suffix(".json").resolve()
+    except ValueError:
+        return (SVG_MATCH_ROOT / f"{pred_root.name}.json").resolve()
 
 
 def list_case_dirs(root: Path) -> list[Path]:

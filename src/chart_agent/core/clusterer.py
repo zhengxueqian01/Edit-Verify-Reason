@@ -8,8 +8,8 @@ from typing import Any
 def run_dbscan(
     points: list[tuple[float, float]],
     question: str,
-    default_eps: float = 5.0,
-    default_min_samples: int = 5,
+    default_eps: float = 6.0,
+    default_min_samples: int = 3,
 ) -> dict[str, Any]:
     if not points:
         return {
@@ -34,6 +34,54 @@ def run_dbscan(
         "eps": eps,
         "min_samples": min_samples,
     }
+
+
+def run_dbscan_by_color(
+    points_by_color: dict[str, list[tuple[float, float]]],
+    question: str,
+    default_eps: float = 6.0,
+    default_min_samples: int = 3,
+) -> dict[str, Any]:
+    eps, min_samples = resolve_dbscan_params(
+        question,
+        default_eps=default_eps,
+        default_min_samples=default_min_samples,
+    )
+    cluster_counts_by_color: dict[str, int] = {}
+    noise_by_color: dict[str, int] = {}
+    labels_by_color: dict[str, list[int]] = {}
+    total_clusters = 0
+    total_noise = 0
+
+    normalized_points = _normalize_points_by_color(points_by_color)
+    for color, points in normalized_points.items():
+        labels = _dbscan(points, eps=eps, min_samples=min_samples) if points else []
+        clusters = len({label for label in labels if label != -1})
+        noise = sum(1 for label in labels if label == -1)
+        cluster_counts_by_color[color] = clusters
+        noise_by_color[color] = noise
+        labels_by_color[color] = labels
+        total_clusters += clusters
+        total_noise += noise
+
+    return {
+        "clusters": total_clusters,
+        "noise": total_noise,
+        "labels_by_color": labels_by_color,
+        "cluster_counts_by_color": cluster_counts_by_color,
+        "noise_by_color": noise_by_color,
+        "eps": eps,
+        "min_samples": min_samples,
+        "mode": "per_color",
+    }
+
+
+def _normalize_points_by_color(points_by_color: dict[str, list[tuple[float, float]]]) -> dict[str, list[tuple[float, float]]]:
+    normalized: dict[str, list[tuple[float, float]]] = {}
+    for color, points in points_by_color.items():
+        color_key = _normalize_color_key(color)
+        normalized.setdefault(color_key, []).extend(points)
+    return normalized
 
 
 def svg_points_to_data(
@@ -147,10 +195,44 @@ def _parse_eps(question: str) -> float | None:
 
 
 def _parse_min_samples(question: str) -> int | None:
-    match = re.search(r"min_samples\s*=\s*(\d+)", question)
+    match = re.search(r"min_samples?\s*=\s*(\d+)", question)
     if match:
         try:
             return int(match.group(1))
         except ValueError:
             return None
     return None
+
+
+def resolve_dbscan_params(
+    question: str,
+    *,
+    default_eps: float,
+    default_min_samples: int,
+) -> tuple[float, int]:
+    eps = _parse_eps(question) or default_eps
+    min_samples = _parse_min_samples(question) or default_min_samples
+    return eps, min_samples
+
+
+def _normalize_color_key(color: Any) -> str:
+    token = str(color or "").strip().lower()
+    if not token:
+        return token
+    if re.fullmatch(r"#[0-9a-f]{3}(?:[0-9a-f]{3})?", token):
+        return token
+    canonical = {
+        "red": "#d62728",
+        "blue": "#1f77b4",
+        "green": "#2ca02c",
+        "orange": "#ff7f0e",
+        "purple": "#9467bd",
+        "pink": "#e377c2",
+        "yellow": "#bcbd22",
+        "cyan": "#17becf",
+        "gray": "#7f7f7f",
+        "grey": "#7f7f7f",
+        "black": "#000000",
+        "brown": "#8c564b",
+    }
+    return canonical.get(token, token)
