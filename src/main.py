@@ -653,6 +653,11 @@ def _allow_answer_after_exhausted_render_validation(
 
 
 def _llm_plan_update(question: str, chart_type: str, llm: Any, retry_hint: str = "") -> dict[str, Any]:
+    new_points_schema = (
+        "list of {x:number,y:number,color?:string} (required for scatter add; preserve per-point color when provided)"
+        if chart_type == "scatter"
+        else "list of {x:number,y:number} (required for scatter add, else empty list)"
+    )
     prompt = (
         "You are planning chart-edit operations.\n"
         f"Chart type: {chart_type}\n"
@@ -660,11 +665,12 @@ def _llm_plan_update(question: str, chart_type: str, llm: Any, retry_hint: str =
         "- operation: one of add|delete|change|unknown\n"
         "- normalized_question: concise imperative update instruction in English\n"
         "- steps: array of step objects in execution order; each step has operation and optional question_hint fields\n"
-        "- new_points: list of {x:number,y:number} (required for scatter add, else empty list)\n"
+        f"- new_points: {new_points_schema}\n"
         f"- retry_hint: {retry_hint or 'none'}\n"
         "Rules:\n"
         "- Do not rewrite or summarize structured data payloads.\n"
         "- question_hint is only a short execution hint, not the source of truth for values.\n"
+        "- For scatter add, if point colors are provided in the question/data payload, copy them through to each new_points item.\n"
         "Question:\n"
         f"{question}"
     )

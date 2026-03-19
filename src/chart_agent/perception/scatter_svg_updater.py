@@ -273,12 +273,39 @@ def _resolve_requested_color(requested_color: Any, existing_colors: list[str]) -
         return ""
     if _is_hex_color(selector):
         return selector
+    canonical_fill = _canonical_color_hex(selector)
+    if canonical_fill:
+        return canonical_fill
     selector_aliases = _color_aliases(selector)
     for fill in existing_colors:
         if fill == selector:
             return fill
         if selector_aliases & _color_aliases(fill):
             return fill
+    return ""
+
+
+def _canonical_color_hex(color: str) -> str:
+    token = str(color or "").strip().lower()
+    canonical = {
+        "red": "#d62728",
+        "blue": "#1f77b4",
+        "green": "#2ca02c",
+        "orange": "#ff7f0e",
+        "purple": "#9467bd",
+        "pink": "#e377c2",
+        "yellow": "#bcbd22",
+        "cyan": "#17becf",
+        "gray": "#7f7f7f",
+        "black": "#000000",
+        "white": "#ffffff",
+        "brown": "#8c564b",
+    }
+    if token in canonical:
+        return canonical[token]
+    for name, hex_value in canonical.items():
+        if token in _color_aliases(name):
+            return hex_value
     return ""
 
 

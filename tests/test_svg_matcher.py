@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 from chart_agent.perception.svg_matcher import (
     _line_style_similarity,
     _extract_scatter_points,
+    _extract_y_axis_ticks,
     _numeric_list_similarity,
     _polyline_similarity_relaxed,
     compare_svgs,
@@ -30,6 +31,33 @@ class SvgMatcherTests(unittest.TestCase):
         score = _numeric_list_similarity(left, right)
 
         self.assertGreaterEqual(score, 0.99)
+
+    def test_extract_y_axis_ticks_supports_text_nodes_and_axis_scale(self) -> None:
+        root = ET.fromstring(
+            """
+<svg xmlns="http://www.w3.org/2000/svg">
+  <g id="matplotlib.axis_2" data-axis-scale="1000000000">
+    <g id="ytick_1">
+      <g id="text_1">
+        <text>0.6</text>
+      </g>
+    </g>
+    <g id="ytick_2">
+      <g id="text_2">
+        <text>0.8</text>
+      </g>
+    </g>
+    <g id="text_3">
+      <text>1e9</text>
+    </g>
+  </g>
+</svg>
+"""
+        )
+
+        ticks = _extract_y_axis_ticks(root)
+
+        self.assertEqual(ticks, [600000000.0, 800000000.0])
 
     def test_extract_scatter_points_reads_all_pathcollection_groups(self) -> None:
         svg = """\

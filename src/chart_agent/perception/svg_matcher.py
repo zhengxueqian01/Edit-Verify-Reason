@@ -490,16 +490,37 @@ def _extract_legend_labels(root: ET.Element) -> list[str]:
     if legend is None:
         return []
     labels: list[str] = []
+    seen: set[str] = set()
     for group in legend.findall(f'./{{{SVG_NS}}}g'):
         gid = str(group.get("id", ""))
         if not gid.startswith("text_"):
+            for text_node in group.findall(f'./{{{SVG_NS}}}text'):
+                text = _normalize_text("".join(text_node.itertext()))
+                if text and text not in seen:
+                    labels.append(text)
+                    seen.add(text)
             continue
+        extracted = False
         for child in list(group):
             if child.tag is ET.Comment:
                 text = _normalize_text(child.text)
-                if text:
+                if text and text not in seen:
                     labels.append(text)
+                    seen.add(text)
+                extracted = True
                 break
+        if extracted:
+            continue
+        for text_node in group.findall(f'./{{{SVG_NS}}}text'):
+            text = _normalize_text("".join(text_node.itertext()))
+            if text and text not in seen:
+                labels.append(text)
+                seen.add(text)
+    for text_node in legend.findall(f'./{{{SVG_NS}}}text'):
+        text = _normalize_text("".join(text_node.itertext()))
+        if text and text not in seen:
+            labels.append(text)
+            seen.add(text)
     return labels
 
 
@@ -507,7 +528,7 @@ def _extract_y_axis_ticks(root: ET.Element) -> list[float]:
     axis = root.find(f'.//{{{SVG_NS}}}g[@id="matplotlib.axis_2"]')
     if axis is None:
         return []
-    scale = 1.0
+    scale = _safe_float(axis.get("data-axis-scale"), 1.0)
     for group in axis.findall(f'./{{{SVG_NS}}}g'):
         gid = str(group.get("id", ""))
         if not gid.startswith("text_"):
@@ -521,6 +542,12 @@ def _extract_y_axis_ticks(root: ET.Element) -> list[float]:
                     except ValueError:
                         scale = 1.0
                 break
+        else:
+            for text_node in group.findall(f'./{{{SVG_NS}}}text'):
+                text = _normalize_text("".join(text_node.itertext()))
+                if re.fullmatch(r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)e[+-]?\d+", text):
+                    scale = _safe_float(text, scale)
+                    break
     ticks: list[float] = []
     for tick_group in axis.findall(f'./{{{SVG_NS}}}g'):
         gid = str(tick_group.get("id", ""))
@@ -537,6 +564,13 @@ def _extract_y_axis_ticks(root: ET.Element) -> list[float]:
                     if nums:
                         ticks.append(nums[0] * scale)
                     break
+            else:
+                for text_node in group.findall(f'./{{{SVG_NS}}}text'):
+                    raw = _normalize_text("".join(text_node.itertext()))
+                    nums = _extract_numbers(raw)
+                    if nums:
+                        ticks.append(nums[0] * scale)
+                        break
             break
     return ticks
 

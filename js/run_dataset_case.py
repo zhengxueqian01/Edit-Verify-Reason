@@ -354,9 +354,14 @@ def run_case(
                     if not isinstance(p, dict):
                         continue
                     try:
-                        new_points.append({"x": float(p.get("x")), "y": float(p.get("y"))})
+                        point = {"x": float(p.get("x")), "y": float(p.get("y"))}
                     except Exception:
                         continue
+                    for key in ("color", "point_color", "fill", "rgb"):
+                        value = p.get(key)
+                        if isinstance(value, str) and value.strip():
+                            point[key] = value.strip()
+                    new_points.append(point)
             if not new_points:
                 raise ValueError("Scatter case has no data_change.points for rendering.")
             png_path = update_scatter_svg(

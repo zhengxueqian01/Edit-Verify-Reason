@@ -112,10 +112,18 @@ def _add_line_series(
     line_style = _extract_line_style(root)
     stroke = line_style.get("stroke", "#dc143c")
     stroke_width = line_style.get("stroke_width", 2.0)
+    stroke_linecap = str(line_style.get("stroke_linecap", "") or "").strip()
     use_markers = bool(line_style.get("has_markers", False))
+    style_parts = [
+        "fill: none",
+        f"stroke: {stroke}",
+        f"stroke-width: {stroke_width}",
+    ]
+    if stroke_linecap:
+        style_parts.append(f"stroke-linecap: {stroke_linecap}")
     line_path.set(
         "style",
-        f"fill: none; stroke: {stroke}; stroke-width: {stroke_width}",
+        "; ".join(style_parts),
     )
 
     line_path.set("d", _format_path(points_svg))
@@ -1061,16 +1069,19 @@ def _extract_line_style(root: ET.Element) -> dict[str, float | str]:
             stroke_norm = stroke.strip()
             if stroke_norm:
                 used_strokes.append(stroke_norm.lower())
-            if first_style is None:
-                first_style = {
-                    "stroke_width": float(stroke_width) if stroke_width else 2.0,
-                    "has_markers": _line_group_has_markers(g),
-                }
+        if first_style is None:
+            stroke_linecap = _extract_style_value(style, "stroke-linecap")
+            first_style = {
+                "stroke_width": float(stroke_width) if stroke_width else 2.0,
+                "stroke_linecap": stroke_linecap.strip() if stroke_linecap else "",
+                "has_markers": _line_group_has_markers(g),
+            }
     if first_style is None:
         return {}
     return {
         "stroke": _pick_unused_line_stroke(used_strokes),
         "stroke_width": first_style["stroke_width"],
+        "stroke_linecap": first_style["stroke_linecap"],
         "has_markers": first_style["has_markers"],
     }
 

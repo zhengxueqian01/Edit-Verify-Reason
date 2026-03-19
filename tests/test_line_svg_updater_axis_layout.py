@@ -142,6 +142,7 @@ class LineSvgAxisLayoutTests(unittest.TestCase):
 
         self.assertEqual(style["stroke"], "#ff7f0e")
         self.assertEqual(style["stroke_width"], 2.0)
+        self.assertEqual(style["stroke_linecap"], "")
         self.assertFalse(style["has_markers"])
 
     def test_extract_line_style_ignores_tick_line_groups(self) -> None:
@@ -169,6 +170,7 @@ class LineSvgAxisLayoutTests(unittest.TestCase):
 
         self.assertEqual(style["stroke"], "#ff7f0e")
         self.assertEqual(style["stroke_width"], 2.0)
+        self.assertEqual(style["stroke_linecap"], "square")
         self.assertFalse(style["has_markers"])
 
 
