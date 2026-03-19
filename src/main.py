@@ -51,8 +51,9 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
     executor_llm = make_llm(get_task_model_config("executor"))
     answer_llm = make_llm(get_task_model_config("answer"))
     tool_planner_llm = make_llm(get_task_model_config("tool_planner"))
-    update_question, qa_question, split_info = _resolve_questions(inputs, splitter_llm)
     structured_context = _normalize_structured_context(inputs.get("structured_update_context"))
+    update_question, qa_question, split_info, split_data_change = _resolve_questions(inputs, splitter_llm)
+    structured_context = _merge_structured_data_change(structured_context, split_data_change)
     update_question = _enrich_update_question(
         update_question=update_question,
         structured_context=structured_context,
@@ -217,8 +218,10 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
         "operation_plan": last_operation_plan,
         "render_check": last_render_check,
         "attempt_logs": attempt_logs,
+        "operation_text": split_info.get("operation_text") or update_question,
         "qa_question": qa_question,
         "update_question": update_question,
+        "resolved_data_change": structured_context.get("data_change", {}),
         "question_split": split_info,
         "perception_steps": last_perception_steps,
         "answer_original_input": answer_original_input,
@@ -372,7 +375,7 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
-def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, str, dict[str, Any]]:
+def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
     raw_question = str(inputs.get("question") or "").strip()
     raw_update = str(inputs.get("update_question") or "").strip()
     raw_qa = str(inputs.get("qa_question") or "").strip()
@@ -382,6 +385,8 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
         "used": False,
         "reason": "not_needed",
         "source_question": raw_question,
+        "operation_text": "",
+        "data_change": {},
     }
 
     if not raw_question and not raw_update and not raw_qa:
@@ -389,19 +394,21 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
 
     update_question = raw_update or raw_question
     qa_question = raw_qa or raw_question
+    split_info["operation_text"] = update_question
     if not auto_split:
         split_info["reason"] = "disabled"
-        return update_question, qa_question, split_info
+        return update_question, qa_question, split_info, {}
 
     # Prefer model-based split whenever a full question is available.
     split_source = raw_question or f"{update_question}. {qa_question}".strip()
     if not split_source:
         split_info["reason"] = "empty_split_source"
-        return update_question, qa_question, split_info
+        return update_question, qa_question, split_info, {}
 
-    split_payload = _llm_split_update_and_qa(split_source, splitter_llm)
-    cand_update = str(split_payload.get("update_question") or "").strip()
+    split_payload = _llm_split_request(split_source, splitter_llm)
+    cand_update = str(split_payload.get("operation_text") or split_payload.get("update_question") or "").strip()
     cand_qa = str(split_payload.get("qa_question") or "").strip()
+    cand_data_change = _normalize_data_change(split_payload.get("data_change"))
     llm_success = bool(split_payload.get("llm_success"))
     if not (cand_update and cand_qa):
         heuristic_update, heuristic_qa = _heuristic_split_update_and_qa(split_source)
@@ -412,6 +419,8 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
         "reason": "llm_split",
         "source_question": split_source,
         "llm_success": llm_success,
+        "operation_text": cand_update or update_question,
+        "data_change": cand_data_change,
     }
     if cand_update:
         update_question = cand_update
@@ -419,7 +428,7 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
         qa_question = cand_qa
     if not llm_success:
         split_info["reason"] = "llm_split_failed_fallback"
-    return update_question, qa_question, split_info
+    return update_question, qa_question, split_info, cand_data_change
 
 
 def _should_force_visual_tool_phase(question: str, chart_type: str) -> bool:
@@ -445,6 +454,28 @@ def _heuristic_split_update_and_qa(question: str) -> tuple[str, str]:
     qa_question = match.group(2).strip()
     update_question = _normalize_gerund_clause(raw_update)
     return update_question, qa_question
+
+
+def _normalize_data_change(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    try:
+        json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        return {}
+    return value
+
+
+def _merge_structured_data_change(
+    structured_context: dict[str, Any],
+    split_data_change: dict[str, Any],
+) -> dict[str, Any]:
+    base = dict(structured_context or {})
+    current = base.get("data_change")
+    merged = dict(current) if isinstance(current, dict) else {}
+    merged.update(_normalize_data_change(split_data_change))
+    base["data_change"] = merged
+    return base
 
 
 def _normalize_gerund_clause(text: str) -> str:
@@ -664,12 +695,13 @@ def _llm_plan_update(question: str, chart_type: str, llm: Any, retry_hint: str =
         "Return JSON only with keys:\n"
         "- operation: one of add|delete|change|unknown\n"
         "- normalized_question: concise imperative update instruction in English\n"
-        "- steps: array of step objects in execution order; each step has operation and optional question_hint fields\n"
+        "- steps: array of step objects in execution order; each step has operation and optional question_hint, operation_target, data_change, and new_points fields\n"
         f"- new_points: {new_points_schema}\n"
         f"- retry_hint: {retry_hint or 'none'}\n"
         "Rules:\n"
         "- Do not rewrite or summarize structured data payloads.\n"
         "- question_hint is only a short execution hint, not the source of truth for values.\n"
+        "- If the input includes structured operation target or data change, preserve them at step level instead of collapsing them into prose.\n"
         "- For scatter add, if point colors are provided in the question/data payload, copy them through to each new_points item.\n"
         "Question:\n"
         f"{question}"
@@ -718,44 +750,53 @@ def _heuristic_plan_update(question: str) -> dict[str, Any]:
     }
 
 
-def _llm_split_update_and_qa(question: str, llm: Any) -> dict[str, Any]:
+def _llm_split_request(question: str, llm: Any) -> dict[str, Any]:
     prompt = (
-        "You split mixed chart requests into update instruction and QA question.\n"
+        "You split chart requests into operation text, QA question, and structured data change.\n"
         "Return JSON only with keys:\n"
-        "- update_question: the chart edit command only (imperative, explicit, step-by-step)\n"
+        "- operation_text: the chart edit command only (imperative, explicit, step-by-step)\n"
         "- qa_question: only the pure QA query to answer after chart is updated\n"
+        "- data_change: structured JSON object for concrete payloads such as points, values, years, or per-step changes; use {} if unavailable\n"
         "- llm_success: true\n"
         "Rules:\n"
         "- Output English only.\n"
         "- qa_question must NOT contain update preconditions like 'after deleting ...'.\n"
         "- Remove leading operation clauses from qa_question, keep only the actual question part.\n"
-        "- If there are multiple edit actions, rewrite update_question as an explicit ordered sequence.\n"
+        "- If there are multiple edit actions, rewrite operation_text as an explicit ordered sequence.\n"
         "- Use concise imperative verbs such as 'Delete', 'Add', 'Change', 'Apply'. Never use gerunds like 'adding', 'deleting', 'applying'.\n"
         "- Preferred format for multiple actions: '1. Delete ...; 2. Apply ...; 3. Add ...'.\n"
-        "- Keep all concrete operation targets and value-revision references in update_question.\n"
+        "- Keep all concrete operation targets in operation_text.\n"
+        "- Move numeric values, points, and concrete revision payloads into data_change whenever possible.\n"
         "- If one part is missing, return empty string for that key.\n"
         "- Do not add explanations.\n"
         "Example:\n"
-        "{\"update_question\":\"1. Delete the category CrimsonLink; 2. Apply the listed value revisions.\",\"qa_question\":\"How many times do the lines for Starburst and AetherNet intersect?\",\"llm_success\":true}\n"
+        "{\"operation_text\":\"1. Delete the category CrimsonLink; 2. Apply the listed value revisions.\",\"qa_question\":\"How many times do the lines for Starburst and AetherNet intersect?\",\"data_change\":{\"change\":{\"changes\":[{\"category_name\":\"Starburst\",\"years\":[2020],\"values\":[12]}]}},\"llm_success\":true}\n"
         "User input:\n"
         f"{question}"
     )
     try:
         response = llm.invoke(prompt)
     except Exception:
-        return {"update_question": "", "qa_question": "", "llm_success": False}
+        return {"operation_text": "", "qa_question": "", "data_change": {}, "llm_success": False}
     content = getattr(response, "content", "")
     payload = _safe_json_loads(content)
     if not payload:
-        return {"update_question": "", "qa_question": "", "llm_success": False}
-    update_q = str(payload.get("update_question") or "").strip()
+        return {"operation_text": "", "qa_question": "", "data_change": {}, "llm_success": False}
+    update_q = str(payload.get("operation_text") or payload.get("update_question") or "").strip()
     qa_q = str(payload.get("qa_question") or "").strip()
+    data_change = _normalize_data_change(payload.get("data_change"))
     return {
+        "operation_text": update_q or question,
         "update_question": update_q or question,
         "qa_question": qa_q or question,
+        "data_change": data_change,
         "llm_success": True,
         "llm_raw": content,
     }
+
+
+def _llm_split_update_and_qa(question: str, llm: Any) -> dict[str, Any]:
+    return _llm_split_request(question, llm)
 
 
 def _choose_planned_question(original: str, normalized: str) -> str:
@@ -833,13 +874,19 @@ def _coerce_steps(raw: Any) -> list[dict[str, Any]]:
         question = str(item.get("question") or "").strip()
         question_hint = str(item.get("question_hint") or question).strip()
         points = _coerce_points(item.get("new_points", []))
-        if not question_hint and not points:
+        operation_target = item.get("operation_target")
+        data_change = _normalize_data_change(item.get("data_change"))
+        if not isinstance(operation_target, dict):
+            operation_target = {}
+        if not question_hint and not points and not operation_target and not data_change:
             continue
         out.append(
             {
                 "operation": op,
                 "question": question,
                 "question_hint": question_hint,
+                "operation_target": operation_target,
+                "data_change": data_change,
                 "new_points": points,
             }
         )

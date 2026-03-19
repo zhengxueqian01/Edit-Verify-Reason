@@ -617,6 +617,610 @@
       right: 2px;
       box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
     }
+
+    .chat-bubble .reason-list {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      color: #4b5563;
+    }
+
+    .workflow-board {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .workflow-empty {
+      min-height: 220px;
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      text-align: center;
+      color: var(--text-muted);
+      padding: 24px;
+      line-height: 1.6;
+    }
+
+    .workflow-playback {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .workflow-section {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .workflow-section.current {
+      border-color: #bfdbfe;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+    }
+
+    .workflow-section.completed {
+      background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+    }
+
+    .workflow-toolbar {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      border: 1px solid #e6eaf2;
+      border-radius: 8px;
+      padding: 12px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    }
+
+    .workflow-toolbar-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .workflow-toolbar-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .workflow-toolbar-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #1f2937;
+    }
+
+    .workflow-toolbar-subtitle {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-muted);
+    }
+
+    .workflow-toolbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .workflow-btn {
+      border: 1px solid #dbe2ef;
+      background: #fff;
+      color: #334155;
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s, color 0.2s;
+    }
+
+    .workflow-btn:hover {
+      border-color: #94a3b8;
+      color: #0f172a;
+    }
+
+    .workflow-btn.active {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      color: #1d4ed8;
+    }
+
+    .workflow-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
+    .workflow-progress-track {
+      width: 100%;
+      height: 8px;
+      border-radius: 999px;
+      background: #e2e8f0;
+      overflow: hidden;
+    }
+
+    .workflow-progress-fill {
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #60a5fa 0%, #2563eb 100%);
+      transition: width 0.28s ease;
+    }
+
+    .workflow-timeline {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .timeline-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid #dbe2ef;
+      border-radius: 999px;
+      background: #fff;
+      color: #334155;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s, color 0.2s;
+    }
+
+    .timeline-chip:hover {
+      border-color: #94a3b8;
+    }
+
+    .timeline-chip.pending {
+      background: #f8fafc;
+      color: #94a3b8;
+    }
+
+    .timeline-chip.current {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      color: #1d4ed8;
+    }
+
+    .timeline-chip.completed.success {
+      background: #ecfdf3;
+      border-color: #b7ebc6;
+      color: #166534;
+    }
+
+    .timeline-chip.completed.warn {
+      background: #fffbeb;
+      border-color: #f6df97;
+      color: #92400e;
+    }
+
+    .timeline-chip.completed.error {
+      background: #fef2f2;
+      border-color: #fecaca;
+      color: #b42318;
+    }
+
+    .timeline-chip.completed.info {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      color: #1d4ed8;
+    }
+
+    .timeline-index {
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 255, 255, 0.8);
+      font-size: 10px;
+      font-weight: 800;
+      color: inherit;
+    }
+
+    .workflow-item,
+    .attempt-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fcfdff;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .workflow-item-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .workflow-item-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1f2937;
+    }
+
+    .workflow-item-subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .field-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      color: #64748b;
+      margin-bottom: 6px;
+    }
+
+    .text-block {
+      margin: 0;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid #e6eaf2;
+      background: #f8fafc;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.6;
+      font-size: 12px;
+      color: #334155;
+    }
+
+    .flow-strip {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .flow-stage {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid #dbe2ef;
+      background: #f8fafc;
+      font-size: 12px;
+      font-weight: 600;
+      color: #475569;
+    }
+
+    .flow-stage.success {
+      background: #ecfdf3;
+      border-color: #b7ebc6;
+      color: #166534;
+    }
+
+    .flow-stage.warn {
+      background: #fffbeb;
+      border-color: #f6df97;
+      color: #92400e;
+    }
+
+    .flow-stage.error {
+      background: #fef2f2;
+      border-color: #fecaca;
+      color: #b42318;
+    }
+
+    .flow-stage.active {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      color: #1d4ed8;
+    }
+
+    .flow-arrow {
+      font-size: 12px;
+      color: #94a3b8;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .metric-card {
+      border: 1px solid #e6eaf2;
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    }
+
+    .metric-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 700;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      margin-bottom: 6px;
+    }
+
+    .metric-value {
+      font-size: 16px;
+      font-weight: 700;
+      color: #1f2937;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid #dbe2ef;
+      background: #f8fafc;
+      color: #475569;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .pill.success {
+      background: #ecfdf3;
+      border-color: #b7ebc6;
+      color: #166534;
+    }
+
+    .pill.warn {
+      background: #fffbeb;
+      border-color: #f6df97;
+      color: #92400e;
+    }
+
+    .pill.error {
+      background: #fef2f2;
+      border-color: #fecaca;
+      color: #b42318;
+    }
+
+    .pill.info {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      color: #1d4ed8;
+    }
+
+    .pill.active {
+      background: #eef2ff;
+      border-color: #c7d2fe;
+      color: #4338ca;
+    }
+
+    .workflow-list,
+    .attempt-grid,
+    .trace-list,
+    .answer-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .workflow-item-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 124px;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .preview-strip {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .preview-card,
+    .workflow-thumb-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .preview-card {
+      border: 1px solid #e6eaf2;
+      border-radius: 8px;
+      padding: 8px;
+      background: #fff;
+    }
+
+    .workflow-thumb-label {
+      font-size: 11px;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      font-weight: 700;
+    }
+
+    .preview-card img,
+    .workflow-thumb {
+      width: 100%;
+      border-radius: 6px;
+      border: 1px solid #e2e8f0;
+      background: #fff;
+      object-fit: contain;
+    }
+
+    .issues-list {
+      margin: 0;
+      padding-left: 18px;
+      color: #b42318;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    details.json-details {
+      border: 1px solid #e6eaf2;
+      border-radius: 8px;
+      background: #fafbff;
+      overflow: hidden;
+    }
+
+    details.json-details summary {
+      cursor: pointer;
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #334155;
+      user-select: none;
+    }
+
+    details.json-details pre {
+      margin: 0;
+      padding: 0 12px 12px;
+      font-size: 11px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #475569;
+    }
+
+    .answer-card {
+      border: 1px solid #e6eaf2;
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .answer-card.primary {
+      background: #f6fff8;
+      border-color: #ccefd6;
+    }
+
+    .answer-card.secondary {
+      background: #f8fbff;
+      border-color: #d9e7ff;
+    }
+
+    .answer-card.muted {
+      background: #fcfcfd;
+    }
+
+    .answer-card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .answer-card-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1f2937;
+    }
+
+    .answer-card-answer {
+      font-size: 18px;
+      font-weight: 700;
+      color: #111827;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+
+    .empty-inline {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    .trace-item {
+      border-left: 3px solid #cbd5e1;
+      padding: 6px 0 6px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .trace-top {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .trace-step {
+      font-size: 11px;
+      font-weight: 700;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    @media (max-width: 1380px) {
+      .panel-left {
+        width: 300px;
+      }
+
+      .panel-right {
+        width: 340px;
+      }
+
+      .workflow-item-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 1120px) {
+      body {
+        height: auto;
+        min-height: 100vh;
+        overflow: auto;
+      }
+
+      .dashboard {
+        height: auto;
+        min-height: 100vh;
+        flex-direction: column;
+      }
+
+      .panel-left,
+      .panel-right {
+        width: 100%;
+      }
+
+      .visualization-area {
+        min-height: 520px;
+      }
+
+      .pip-card {
+        position: static;
+        width: 100%;
+        margin-top: 12px;
+      }
+
+      .pip-card:hover {
+        width: 100%;
+        transform: none;
+      }
+    }
   </style>
 </head>
 
@@ -784,8 +1388,30 @@
         </div>
       </div>
 
-    </div>
-
+      <div class="panel panel-right">
+        <div class="panel-header">
+          <span class="icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 6h16"></path>
+              <path d="M4 12h16"></path>
+              <path d="M4 18h10"></path>
+            </svg>
+          </span>
+          AGENT WORKFLOW
+        </div>
+        <div class="notes-area workflow-board" id="workflowPanel">
+          <div class="workflow-empty">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round" style="color:#94a3b8;">
+              <path d="M12 3v18"></path>
+              <path d="M7 8l5-5 5 5"></path>
+              <path d="M7 16l5 5 5-5"></path>
+            </svg>
+            <div>这里会展示问题拆解、操作计划、执行步骤、render 校验和答案链路。</div>
+          </div>
+        </div>
+      </div>
     </div>
   </form>
 
@@ -794,6 +1420,7 @@
     const svgFileInput = document.getElementById('svgFile');
     const btn = document.getElementById('submitBtn');
     const qaAnswer = document.getElementById('qaAnswer');
+    const workflowPanel = document.getElementById('workflowPanel');
 
     const statusBox = document.getElementById('statusBox');
     const statusText = document.getElementById('statusText');
@@ -810,46 +1437,1033 @@
     const btnModeBox = document.getElementById('btnModeBox');
     const btnUndoAnno = document.getElementById('btnUndoAnno');
     const btnClearAnno = document.getElementById('btnClearAnno');
+    const questionInput = document.getElementById('question');
 
     let sourcePreviewUrl = '';
-    let sourceImageElement = null;
-
-    let annoMode = 'point'; // point, line, box
-    let annotations = []; // { type: 'point', x, y }, { type: 'line', x1, y1, x2, y2 }, { type: 'box', x, y, w, h }
+    let lastSubmittedQuery = '';
+    let currentZoom = 1;
+    let annoMode = 'point';
+    let annotations = [];
     let isDrawing = false;
-    let startX = 0, startY = 0;
+    let startX = 0;
+    let startY = 0;
+    let workflowPlayback = null;
 
-    // Mode selection
+    window.currentResultUrl = '';
+
     const modeBtns = [btnModePoint, btnModeLine, btnModeBox];
+    const WORKFLOW_AUTO_PLAY_MS = 680;
+
+    function _text(value) {
+      if (value === null || value === undefined) return '';
+      return String(value).trim();
+    }
+
+    function _answerText(answerObj) {
+      if (answerObj && typeof answerObj === 'object') return _text(answerObj.answer);
+      return _text(answerObj);
+    }
+
+    function hasValue(value) {
+      if (value === null || value === undefined) return false;
+      if (typeof value === 'string') return value.trim() !== '';
+      if (Array.isArray(value)) return value.length > 0;
+      if (typeof value === 'object') return Object.keys(value).length > 0;
+      return true;
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatJson(value) {
+      if (value === null || value === undefined) return '';
+      if (typeof value === 'string') return value;
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (err) {
+        return String(value);
+      }
+    }
+
+    function formatConfidence(value) {
+      const num = Number(value);
+      if (!Number.isFinite(num)) return '';
+      return `${Math.round(num * 100)}%`;
+    }
+
+    function toneForOperation(operation) {
+      const op = _text(operation).toLowerCase();
+      if (op === 'add') return 'success';
+      if (op === 'delete') return 'error';
+      if (op === 'change') return 'warn';
+      return 'info';
+    }
+
+    function toneForRenderCheck(renderCheck) {
+      const check = renderCheck && typeof renderCheck === 'object' ? renderCheck : {};
+      if (!hasValue(check)) return '';
+      if (check.ok) {
+        return Array.isArray(check.issues) && check.issues.length ? 'warn' : 'success';
+      }
+      return 'error';
+    }
+
+    function toneForPerceptionStep(step) {
+      const perception = step && typeof step.perception === 'object' ? step.perception : {};
+      if (Array.isArray(perception.issues) && perception.issues.length) return 'warn';
+      if (perception.mapping_ok || perception.sanity_passed || hasValue(step)) return 'success';
+      return '';
+    }
+
+    function pathToFileUrl(path, cacheBust = '') {
+      const raw = _text(path);
+      if (!raw) return '';
+      const base = raw.startsWith('/files/') ? raw : `/files/${raw.replace(/^\/+/, '')}`;
+      if (!cacheBust) return base;
+      return `${base}${base.includes('?') ? '&' : '?'}t=${cacheBust}`;
+    }
+
+    function compactMappingInfo(mappingInfo) {
+      if (!mappingInfo || typeof mappingInfo !== 'object') return {};
+      return {
+        axes_bounds: mappingInfo.axes_bounds || {},
+        x_ticks_count: Array.isArray(mappingInfo.x_ticks) ? mappingInfo.x_ticks.length : 0,
+        y_ticks_count: Array.isArray(mappingInfo.y_ticks) ? mappingInfo.y_ticks.length : 0,
+        dominant_point_color: mappingInfo.dominant_point_color || '',
+        requested_point_color: mappingInfo.requested_point_color || '',
+        llm_meta: mappingInfo.llm_meta || {},
+      };
+    }
+
+    function summarizePrimitives(summary) {
+      if (!summary || typeof summary !== 'object') return 'N/A';
+      const pairs = [
+        ['pts', summary.num_points],
+        ['bars', summary.num_bars],
+        ['areas', summary.num_areas],
+        ['lines', summary.num_lines],
+      ].filter(([, value]) => value !== undefined && value !== null);
+      if (!pairs.length) return 'N/A';
+      return pairs.map(([label, value]) => `${label}:${value}`).join(' · ');
+    }
+
+    function renderPill(label, tone = '') {
+      if (!hasValue(label)) return '';
+      const className = tone ? `pill ${tone}` : 'pill';
+      return `<span class="${className}">${escapeHtml(label)}</span>`;
+    }
+
+    function renderIssues(title, issues) {
+      if (!Array.isArray(issues) || !issues.length) return '';
+      return `
+        <div>
+          ${title ? `<div class="field-label">${escapeHtml(title)}</div>` : ''}
+          <ul class="issues-list">
+            ${issues.map((issue) => `<li>${escapeHtml(issue)}</li>`).join('')}
+          </ul>
+        </div>
+      `;
+    }
+
+    function renderJsonDetails(title, value, open = false) {
+      if (!hasValue(value)) return '';
+      return `
+        <details class="json-details"${open ? ' open' : ''}>
+          <summary>${escapeHtml(title)}</summary>
+          <pre>${escapeHtml(formatJson(value))}</pre>
+        </details>
+      `;
+    }
+
+    function renderMetricGrid(metrics) {
+      const items = metrics.filter((item) => hasValue(item && item.value));
+      if (!items.length) return '';
+      return `
+        <div class="metric-grid">
+          ${items.map((item) => `
+            <div class="metric-card">
+              <span class="metric-label">${escapeHtml(item.label)}</span>
+              <div class="metric-value">${escapeHtml(item.value)}</div>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    function renderFlowStrip(stages) {
+      const list = Array.isArray(stages) ? stages.filter(Boolean) : [];
+      if (!list.length) return '';
+      let html = '<div class="flow-strip">';
+      list.forEach((stage, index) => {
+        const tone = _text(stage.state) || '';
+        html += `<div class="flow-stage ${tone}">${escapeHtml(stage.label)}</div>`;
+        if (index < list.length - 1) {
+          html += '<div class="flow-arrow">→</div>';
+        }
+      });
+      html += '</div>';
+      return html;
+    }
+
+    function renderPreviewStrip(items) {
+      const previews = Array.isArray(items) ? items.filter((item) => hasValue(item && item.url)) : [];
+      if (!previews.length) return '';
+      return `
+        <div class="preview-strip">
+          ${previews.map((item) => `
+            <div class="preview-card">
+              <div class="workflow-thumb-label">${escapeHtml(item.label)}</div>
+              <img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.label)}" loading="lazy" />
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    function renderReasonList(reason) {
+      if (Array.isArray(reason) && reason.length) {
+        return `<ul class="reason-list">${reason.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
+      }
+      if (_text(reason)) {
+        return `<p>${escapeHtml(_text(reason))}</p>`;
+      }
+      return '';
+    }
+
+    function renderAnswerCard(title, payload, tone = 'muted', extraPills = []) {
+      if (!hasValue(payload) && !_answerText(payload)) return '';
+      const confidence = payload && typeof payload === 'object' ? formatConfidence(payload.confidence) : '';
+      const issues = payload && typeof payload === 'object' && Array.isArray(payload.issues) ? payload.issues : [];
+      const pills = [...extraPills];
+      if (confidence) pills.push(renderPill(confidence, 'info'));
+      return `
+        <div class="answer-card ${tone}">
+          <div class="answer-card-header">
+            <div class="answer-card-title">${escapeHtml(title)}</div>
+            <div class="pill-row">${pills.join('')}</div>
+          </div>
+          <div class="answer-card-answer">${escapeHtml(_answerText(payload) || '(empty)')}</div>
+          ${renderReasonList(payload && typeof payload === 'object' ? payload.reason : '')}
+          ${renderIssues('', issues)}
+        </div>
+      `;
+    }
+
+    function renderAttemptCard(attempt, cacheBust = '') {
+      const renderCheck = attempt && typeof attempt.render_check === 'object' ? attempt.render_check : {};
+      const operationPlan = attempt && typeof attempt.operation_plan === 'object' ? attempt.operation_plan : {};
+      const outputPreview = _text(attempt && attempt.output_image_path)
+        ? pathToFileUrl(attempt.output_image_path, cacheBust)
+        : '';
+      return `
+        <div class="attempt-card">
+          <div class="workflow-item-header">
+            <div>
+              <div class="workflow-item-title">Attempt ${escapeHtml(attempt && attempt.attempt || '?')}</div>
+              <div class="workflow-item-subtitle">${escapeHtml(_text(attempt && attempt.chart_type) || 'unknown chart')}</div>
+            </div>
+            <div class="pill-row">
+              ${renderPill(renderCheck.ok ? 'render pass' : 'render fail', toneForRenderCheck(renderCheck))}
+              ${renderPill(`${Array.isArray(attempt && attempt.step_logs) ? attempt.step_logs.length : 0} step(s)`, 'info')}
+            </div>
+          </div>
+          ${hasValue(attempt && attempt.planned_question) ? `
+            <div>
+              <div class="field-label">Planned Question</div>
+              <pre class="text-block">${escapeHtml(_text(attempt.planned_question))}</pre>
+            </div>
+          ` : ''}
+          ${renderMetricGrid([
+            { label: 'Operation', value: _text(operationPlan.operation) || 'unknown' },
+            { label: 'Plan Steps', value: String(Array.isArray(operationPlan.steps) ? operationPlan.steps.length : 0) },
+            { label: 'Render Confidence', value: formatConfidence(renderCheck.confidence) || 'N/A' },
+            { label: 'Output', value: outputPreview ? 'available' : 'missing' },
+          ])}
+          ${outputPreview ? renderPreviewStrip([{ label: 'Attempt Output', url: outputPreview }]) : ''}
+          ${renderIssues('Render Issues', Array.isArray(renderCheck.issues) ? renderCheck.issues : [])}
+          ${renderJsonDetails('Attempt Planner Payload', operationPlan)}
+        </div>
+      `;
+    }
+
+    function renderAttemptCards(attempts, cacheBust = '') {
+      const items = Array.isArray(attempts) ? attempts : [];
+      if (!items.length) return '';
+      return `
+        <div class="attempt-grid">
+          ${items.map((attempt) => renderAttemptCard(attempt, cacheBust)).join('')}
+        </div>
+      `;
+    }
+
+    function renderExecutionStep(step, stepLog, cacheBust) {
+      const perception = step && typeof step.perception === 'object' ? step.perception : {};
+      const updateSpec = perception.update_spec && typeof perception.update_spec === 'object' ? perception.update_spec : {};
+      const primitivesSummary = perception.primitives_summary && typeof perception.primitives_summary === 'object'
+        ? perception.primitives_summary
+        : {};
+      const outputPreview = stepLog && stepLog.output_image_path ? pathToFileUrl(stepLog.output_image_path, cacheBust) : '';
+      const chips = [
+        renderPill(`操作 ${_text(step.operation) || 'unknown'}`, toneForOperation(step.operation)),
+        renderPill(`图表 ${_text(perception.chart_type) || 'unknown'}`, 'info'),
+        renderPill(perception.mapping_ok ? 'mapping ok' : 'mapping ?', perception.mapping_ok ? 'success' : 'warn'),
+        renderPill(perception.sanity_passed ? 'sanity pass' : 'sanity ?', perception.sanity_passed ? 'success' : 'warn'),
+      ].join('');
+
+      return `
+        <div class="workflow-item">
+          <div class="workflow-item-header">
+            <div>
+              <div class="workflow-item-title">Step ${escapeHtml(step.index || '?')} · ${escapeHtml((_text(step.operation) || 'unknown').toUpperCase())}</div>
+              <div class="workflow-item-subtitle">${escapeHtml(_text(step.question_hint) || '执行子问题')}</div>
+            </div>
+            <div class="pill-row">${chips}</div>
+          </div>
+          <div class="workflow-item-grid">
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <div>
+                <div class="field-label">执行问题</div>
+                <pre class="text-block">${escapeHtml(_text(step.question) || '(empty)')}</pre>
+              </div>
+              ${renderMetricGrid([
+                { label: 'Parsed Points', value: String(Array.isArray(updateSpec.new_points) ? updateSpec.new_points.length : 0) },
+                { label: 'Point Color', value: _text(updateSpec.point_color) || 'N/A' },
+                { label: 'Chart Confidence', value: formatConfidence(perception.chart_type_confidence) || 'N/A' },
+                { label: 'Primitives', value: summarizePrimitives(primitivesSummary) },
+              ])}
+              ${renderJsonDetails('Operation Target', step.operation_target)}
+              ${renderJsonDetails('Data Change', step.data_change)}
+              ${renderJsonDetails('Update Spec', updateSpec)}
+              ${renderJsonDetails('Mapping Summary', compactMappingInfo(perception.mapping_info))}
+              ${renderIssues('Perception Issues', Array.isArray(perception.issues) ? perception.issues : [])}
+            </div>
+            <div class="workflow-thumb-wrap">
+              <div class="workflow-thumb-label">Step Output</div>
+              ${outputPreview
+                ? `<img class="workflow-thumb" src="${escapeHtml(outputPreview)}" alt="step output ${escapeHtml(step.index || '?')}" loading="lazy" />`
+                : '<div class="empty-inline">无步骤预览图</div>'}
+            </div>
+          </div>
+          ${renderJsonDetails('Step Log', stepLog)}
+        </div>
+      `;
+    }
+
+    function renderTraceList(trace) {
+      const items = Array.isArray(trace) ? trace : [];
+      if (!items.length) {
+        return '<div class="empty-inline">没有可展示的 trace。</div>';
+      }
+      return `
+        <div class="trace-list">
+          ${items.map((item) => `
+            <div class="trace-item">
+              <div class="trace-top">
+                <span class="trace-step">#${escapeHtml(item.step || '?')}</span>
+                ${renderPill(_text(item.action) || 'unknown', item.error ? 'error' : 'info')}
+                ${renderPill(_text(item.node) || 'node', 'active')}
+              </div>
+              <div class="workflow-item-subtitle">${escapeHtml(_text(item.rationale) || '')}</div>
+              ${renderJsonDetails('Inputs', item.inputs_summary)}
+              ${renderJsonDetails('Outputs', item.outputs_summary)}
+              ${item.error ? renderIssues('', [item.error]) : ''}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    function clearWorkflowPlaybackTimer() {
+      if (workflowPlayback && workflowPlayback.timer) {
+        window.clearTimeout(workflowPlayback.timer);
+        workflowPlayback.timer = 0;
+      }
+    }
+
+    function resetWorkflowPlayback() {
+      clearWorkflowPlaybackTimer();
+      workflowPlayback = null;
+    }
+
+    function renderWorkflowEmptyState(message) {
+      resetWorkflowPlayback();
+      workflowPanel.innerHTML = `
+        <div class="workflow-empty">
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round" style="color:#94a3b8;">
+            <path d="M12 3v18"></path>
+            <path d="M7 8l5-5 5 5"></path>
+            <path d="M7 16l5 5 5-5"></path>
+          </svg>
+          <div>${escapeHtml(message || '这里会展示 workflow 细节。')}</div>
+        </div>
+      `;
+    }
+
+    function renderWorkflowPending(context = {}) {
+      resetWorkflowPlayback();
+      const displayQ = _text(context.displayQ || context.userQ) || '等待输入';
+      workflowPanel.innerHTML = `
+        <section class="workflow-section">
+          <div class="workflow-item-header">
+            <div>
+              <div class="workflow-item-title">正在执行当前请求</div>
+              <div class="workflow-item-subtitle">等待 question split / plan / perception / render 结果返回</div>
+            </div>
+            <div class="pill-row">${renderPill('运行中', 'active')}</div>
+          </div>
+          ${renderFlowStrip([
+            { label: '输入', state: 'success' },
+            { label: '拆解', state: 'active' },
+            { label: '计划', state: '' },
+            { label: '尝试', state: '' },
+            { label: '执行', state: '' },
+            { label: '校验', state: '' },
+            { label: '工具', state: '' },
+            { label: '回答', state: '' },
+          ])}
+          <div>
+            <div class="field-label">当前输入</div>
+            <pre class="text-block">${escapeHtml(displayQ)}</pre>
+          </div>
+          ${context.hadAnnotations ? '<div class="empty-inline">本次提交包含画布标注，返回后会在 workflow 中展示增强输入。</div>' : ''}
+        </section>
+      `;
+    }
+
+    function buildWorkflowModel(data, context = {}) {
+      const result = data && typeof data.result === 'object' ? data.result : {};
+      const questionSplit = result.question_split && typeof result.question_split === 'object' ? result.question_split : {};
+      const operationPlan = result.operation_plan && typeof result.operation_plan === 'object' ? result.operation_plan : {};
+      const perceptionSteps = Array.isArray(result.perception_steps) ? result.perception_steps : [];
+      const attempts = Array.isArray(result.attempt_logs) ? result.attempt_logs : [];
+      const latestAttempt = attempts.length ? attempts[attempts.length - 1] : {};
+      const stepLogs = Array.isArray(latestAttempt.step_logs) ? latestAttempt.step_logs : [];
+      const stepLogByIndex = new Map(stepLogs.map((item) => [Number(item.index), item]));
+      const renderCheck = result.render_check && typeof result.render_check === 'object' ? result.render_check : {};
+      const toolPhase = result.tool_phase && typeof result.tool_phase === 'object' ? result.tool_phase : {};
+      const planner = toolPhase.planner && typeof toolPhase.planner === 'object' ? toolPhase.planner : {};
+      const latestPerception = perceptionSteps.length
+        ? (perceptionSteps[perceptionSteps.length - 1].perception || {})
+        : {};
+      const cacheBust = Date.now();
+
+      const inputQuestion = _text(questionSplit.source_question) || _text(context.userQ) || _text(context.displayQ);
+      const operationText = _text(result.operation_text) || _text(questionSplit.operation_text);
+      const updateQuestion = _text(result.update_question);
+      const qaQuestion = _text(result.qa_question);
+      const splitDataChange = questionSplit.data_change && typeof questionSplit.data_change === 'object'
+        ? questionSplit.data_change
+        : {};
+      const resolvedDataChange = result.resolved_data_change && typeof result.resolved_data_change === 'object'
+        ? result.resolved_data_change
+        : {};
+      const finalAnswer = _answerText(result.answer) || _text(data.qa_answer);
+
+      const toolCalls = Array.isArray(toolPhase.tool_calls) ? toolPhase.tool_calls : [];
+      const executedTools = Array.isArray(toolPhase.executed) ? toolPhase.executed : [];
+      const toolErrors = Array.isArray(toolPhase.errors) ? toolPhase.errors : [];
+
+      const splitState = questionSplit.used ? 'success' : (operationText || qaQuestion ? 'warn' : '');
+      const planState = hasValue(operationPlan)
+        ? (operationPlan.llm_success ? 'success' : 'warn')
+        : '';
+      const executeState = stepLogs.length ? 'success' : (attempts.length ? 'warn' : '');
+      const renderState = toneForRenderCheck(renderCheck);
+      const toolState = toolPhase.ok
+        ? 'success'
+        : (toolCalls.length || _text(toolPhase.reason) ? 'warn' : 'info');
+      const answerState = finalAnswer ? 'success' : 'warn';
+
+      const inputPreviews = [];
+      if (sourcePreviewUrl) {
+        inputPreviews.push({ label: '原始 SVG 预览', url: sourcePreviewUrl });
+      }
+      if (_text(data.enhanced_image_url)) {
+        inputPreviews.push({ label: '增强输入', url: pathToFileUrl(data.enhanced_image_url, cacheBust) });
+      }
+
+      const finalModelPill = data.model_name ? renderPill(data.model_name, 'info') : '';
+      const finalAnswerCardTone = result.answer_tool_augmented ? 'secondary' : 'primary';
+      const toolPreviewUrl = toolPhase.ok && _text(toolPhase.augmented_image_path)
+        ? pathToFileUrl(toolPhase.augmented_image_path, cacheBust)
+        : '';
+
+      return {
+        data,
+        context,
+        result,
+        questionSplit,
+        operationPlan,
+        perceptionSteps,
+        attempts,
+        latestAttempt,
+        stepLogs,
+        stepLogByIndex,
+        renderCheck,
+        toolPhase,
+        planner,
+        latestPerception,
+        cacheBust,
+        inputQuestion,
+        operationText,
+        updateQuestion,
+        qaQuestion,
+        splitDataChange,
+        resolvedDataChange,
+        finalAnswer,
+        toolCalls,
+        executedTools,
+        toolErrors,
+        splitState,
+        planState,
+        executeState,
+        renderState,
+        toolState,
+        answerState,
+        inputPreviews,
+        finalModelPill,
+        finalAnswerCardTone,
+        toolPreviewUrl,
+      };
+    }
+
+    function buildWorkflowSections(model) {
+      const sections = [];
+
+      sections.push({
+        id: 'split',
+        label: '拆解',
+        title: '问题拆解',
+        subtitle: '用户输入先拆成 operation、QA question、data change，再进入 planner。',
+        state: model.splitState || 'info',
+        badges: [
+          renderPill(model.questionSplit.used ? 'LLM 拆解' : '直接复用/回退', model.questionSplit.used ? 'success' : 'warn'),
+          hasValue(model.questionSplit.reason) ? renderPill(model.questionSplit.reason, 'active') : '',
+          model.context.hadAnnotations ? renderPill('含画布标注', 'info') : '',
+        ].join(''),
+        body: `
+          <div>
+            <div class="field-label">原始问题</div>
+            <pre class="text-block">${escapeHtml(model.inputQuestion || '(empty)')}</pre>
+          </div>
+          <div>
+            <div class="field-label">Operation</div>
+            <pre class="text-block">${escapeHtml(model.operationText || '(empty)')}</pre>
+          </div>
+          <div>
+            <div class="field-label">QA Question</div>
+            <pre class="text-block">${escapeHtml(model.qaQuestion || '(empty)')}</pre>
+          </div>
+          ${renderJsonDetails('Data Change', model.resolvedDataChange && Object.keys(model.resolvedDataChange).length ? model.resolvedDataChange : model.splitDataChange)}
+          <div>
+            <div class="field-label">Planner Input</div>
+            <pre class="text-block">${escapeHtml(model.updateQuestion || '(empty)')}</pre>
+          </div>
+          ${renderPreviewStrip(model.inputPreviews)}
+        `,
+      });
+
+      sections.push({
+        id: 'plan',
+        label: '计划',
+        title: '操作计划',
+        subtitle: '展示 planner 归一化后的操作和分步计划。',
+        state: model.planState || 'info',
+        badges: [
+          renderPill(`主操作 ${_text(model.operationPlan.operation) || 'unknown'}`, toneForOperation(model.operationPlan.operation)),
+          renderPill(model.operationPlan.llm_success ? 'planner ok' : 'planner fallback', model.operationPlan.llm_success ? 'success' : 'warn'),
+        ].join(''),
+        body: `
+          <div>
+            <div class="field-label">Normalized Question</div>
+            <pre class="text-block">${escapeHtml(_text(model.operationPlan.normalized_question) || model.updateQuestion || '(empty)')}</pre>
+          </div>
+          <div class="workflow-list">
+            ${(Array.isArray(model.operationPlan.steps) ? model.operationPlan.steps : []).map((step, index) => `
+              <div class="workflow-item">
+                <div class="workflow-item-header">
+                  <div>
+                    <div class="workflow-item-title">Plan Step ${index + 1}</div>
+                    <div class="workflow-item-subtitle">${escapeHtml(_text(step.question_hint) || _text(step.question) || '没有额外 hint')}</div>
+                  </div>
+                  <div class="pill-row">${renderPill(_text(step.operation) || 'unknown', toneForOperation(step.operation))}</div>
+                </div>
+                ${renderJsonDetails('Planner Step Payload', step)}
+              </div>
+            `).join('') || '<div class="empty-inline">当前结果没有返回额外 plan step，将直接用主问题执行。</div>'}
+          </div>
+          ${renderJsonDetails('Planner LLM Raw', model.operationPlan.llm_raw)}
+        `,
+      });
+
+      if (model.attempts.length) {
+        model.attempts.forEach((attempt, index) => {
+          const attemptRenderCheck = attempt && typeof attempt.render_check === 'object' ? attempt.render_check : {};
+          sections.push({
+            id: `attempt-${index + 1}`,
+            label: `尝试 ${index + 1}`,
+            title: `Attempt ${attempt && attempt.attempt || index + 1}`,
+            subtitle: '展示该轮 planner、render 校验和中间产物。',
+            state: toneForRenderCheck(attemptRenderCheck) || 'info',
+            badges: [
+              renderPill(`chart ${_text(attempt && attempt.chart_type) || 'unknown'}`, 'info'),
+              renderPill(attemptRenderCheck.ok ? 'render pass' : 'render fail', toneForRenderCheck(attemptRenderCheck) || 'warn'),
+            ].join(''),
+            body: renderAttemptCard(attempt, model.cacheBust),
+          });
+        });
+      } else {
+        sections.push({
+          id: 'attempt-empty',
+          label: '尝试',
+          title: '执行尝试',
+          subtitle: '当前结果没有返回任何 attempt 记录。',
+          state: 'warn',
+          badges: renderPill('0 attempt', 'warn'),
+          body: '<div class="empty-inline">没有可展示的 attempt log。</div>',
+        });
+      }
+
+      if (model.perceptionSteps.length) {
+        model.perceptionSteps.forEach((step) => {
+          const perception = step && typeof step.perception === 'object' ? step.perception : {};
+          const stepLog = model.stepLogByIndex.get(Number(step.index));
+          sections.push({
+            id: `step-${step.index}`,
+            label: `执行 ${step.index || '?'}`,
+            title: `Step ${step.index || '?'} · ${(_text(step.operation) || 'unknown').toUpperCase()}`,
+            subtitle: _text(step.question_hint) || '执行子问题与感知结果。',
+            state: toneForPerceptionStep(step) || model.executeState || 'info',
+            badges: [
+              renderPill(`操作 ${_text(step.operation) || 'unknown'}`, toneForOperation(step.operation)),
+              renderPill(`图表 ${_text(perception.chart_type) || 'unknown'}`, 'info'),
+            ].join(''),
+            body: renderExecutionStep(step, stepLog, model.cacheBust),
+          });
+        });
+      } else {
+        sections.push({
+          id: 'step-empty',
+          label: '执行',
+          title: '执行过程',
+          subtitle: '没有返回 perception step。',
+          state: model.executeState || 'warn',
+          badges: renderPill('无 step', 'warn'),
+          body: '<div class="empty-inline">当前结果没有返回 perception step 或 step log。</div>',
+        });
+      }
+
+      sections.push({
+        id: 'render',
+        label: '校验',
+        title: 'Render Validation',
+        subtitle: model.renderCheck.ok ? '渲染结果通过校验。' : '渲染结果未通过校验。',
+        state: model.renderState || 'info',
+        badges: [
+          renderPill(model.renderCheck.ok ? 'pass' : 'fail', model.renderState || 'warn'),
+          renderPill(formatConfidence(model.renderCheck.confidence) || 'N/A', 'info'),
+        ].join(''),
+        body: `
+          ${renderIssues('Validation Issues', Array.isArray(model.renderCheck.issues) ? model.renderCheck.issues : [])}
+          ${renderJsonDetails('Render Check Raw', model.renderCheck, true)}
+        `,
+      });
+
+      sections.push({
+        id: 'tool',
+        label: '工具',
+        title: 'Tool Phase',
+        subtitle: _text(model.planner.qa_understanding) || _text(model.toolPhase.reason) || '没有额外 tool augmentation。',
+        state: model.toolState || 'info',
+        badges: [
+          renderPill(model.toolPhase.ok ? 'tool executed' : (_text(model.toolPhase.reason) || 'tool skipped'), model.toolPhase.ok ? 'success' : 'warn'),
+          renderPill(`${model.executedTools.length}/${model.toolCalls.length}`, 'info'),
+        ].join(''),
+        body: `
+          ${hasValue(model.planner.notes) ? `
+            <div>
+              <div class="field-label">Planner Notes</div>
+              <pre class="text-block">${escapeHtml(_text(model.planner.notes))}</pre>
+            </div>
+          ` : ''}
+          ${model.toolCalls.length ? renderJsonDetails('Planned Tool Calls', model.toolCalls, true) : '<div class="empty-inline">没有规划任何 tool call。</div>'}
+          ${model.executedTools.length ? renderJsonDetails('Executed Tool Calls', model.executedTools) : ''}
+          ${renderIssues('Tool Errors', model.toolErrors)}
+          ${model.toolPreviewUrl && _text(model.toolPhase.augmented_image_path) !== _text(model.result.output_image_path)
+            ? renderPreviewStrip([{ label: 'Tool Augmented Output', url: model.toolPreviewUrl }])
+            : ''}
+          ${renderJsonDetails('Tool Planner Raw', model.planner.llm_raw)}
+        `,
+      });
+
+      sections.push({
+        id: 'answer',
+        label: '回答',
+        title: '答案链路',
+        subtitle: '对比原图 QA、更新后 QA 和 tool-augmented QA，最终返回 answer。',
+        state: model.answerState || 'info',
+        badges: [
+          renderPill(model.finalAnswer || 'No answer', model.finalAnswer ? 'success' : 'warn'),
+          model.finalModelPill,
+        ].join(''),
+        body: `
+          <div class="answer-grid">
+            ${renderAnswerCard('原图 QA', model.result.answer_original, 'muted')}
+            ${renderAnswerCard('更新后 QA', model.result.answer_initial || model.result.answer, model.finalAnswerCardTone)}
+            ${renderAnswerCard('Tool-Augmented QA', model.result.answer_tool_augmented, 'primary', [renderPill('最终候选', 'success')])}
+          </div>
+          ${renderIssues('Answer Issues', Array.isArray(model.data.answer_issues) ? model.data.answer_issues : [])}
+        `,
+      });
+
+      sections.push({
+        id: 'trace',
+        label: 'Trace',
+        title: '最新 Trace',
+        subtitle: '这里是最后一次 perception / render validation 的 trace。',
+        state: 'info',
+        badges: renderPill(`${Array.isArray(model.result.trace) ? model.result.trace.length : 0} record(s)`, 'info'),
+        body: `
+          ${renderTraceList(model.result.trace)}
+          ${model.data.error ? renderIssues('Top-level Error', [model.data.error]) : ''}
+        `,
+      });
+
+      return sections;
+    }
+
+    function renderWorkflowTimeline(playback) {
+      const sections = playback && Array.isArray(playback.sections) ? playback.sections : [];
+      if (!sections.length) return '';
+      return `
+        <div class="workflow-timeline">
+          ${sections.map((section, index) => {
+            let className = 'timeline-chip pending';
+            if (index === playback.activeIndex) {
+              className = 'timeline-chip current';
+            } else if (playback.expandAll || index < playback.revealCount) {
+              className = `timeline-chip completed ${_text(section.state) || 'info'}`;
+            }
+            return `
+              <button type="button" class="${className}" data-workflow-action="jump" data-workflow-index="${index}">
+                <span class="timeline-index">${index + 1}</span>
+                <span>${escapeHtml(section.label)}</span>
+              </button>
+            `;
+          }).join('')}
+        </div>
+      `;
+    }
+
+    function renderWorkflowToolbar(model, playback) {
+      const sections = playback && Array.isArray(playback.sections) ? playback.sections : [];
+      const total = sections.length;
+      const current = sections[playback.activeIndex] || null;
+      const shown = playback.expandAll ? total : playback.revealCount;
+      const progress = total ? Math.round((shown / total) * 100) : 0;
+      return `
+        <section class="workflow-section current">
+          <div class="workflow-item-header">
+            <div>
+              <div class="workflow-item-title">流程播放</div>
+              <div class="workflow-item-subtitle">${escapeHtml(current ? `当前阶段：${current.title}` : '当前没有可播放阶段')}</div>
+            </div>
+            <div class="pill-row">
+              ${renderPill(`${shown}/${total || 0}`, 'info')}
+              ${renderPill(playback.expandAll ? '全量展开' : (playback.autoPlay ? '自动播放中' : '手动浏览'), playback.expandAll ? 'success' : (playback.autoPlay ? 'active' : 'warn'))}
+            </div>
+          </div>
+          <div class="workflow-toolbar">
+            <div class="workflow-toolbar-top">
+              <div class="workflow-toolbar-copy">
+                <div class="workflow-toolbar-title">按阶段查看当前运行</div>
+                <div class="workflow-toolbar-subtitle">默认会自动播放整个链路，也可以手动跳到任意阶段。</div>
+              </div>
+              <div class="workflow-toolbar-actions">
+                <button type="button" class="workflow-btn" data-workflow-action="prev"${playback.activeIndex <= 0 ? ' disabled' : ''}>上一步</button>
+                <button type="button" class="workflow-btn" data-workflow-action="next"${playback.activeIndex >= total - 1 ? ' disabled' : ''}>下一步</button>
+                <button type="button" class="workflow-btn ${playback.autoPlay ? 'active' : ''}" data-workflow-action="toggle-play"${!total ? ' disabled' : ''}>${playback.autoPlay ? '暂停播放' : '自动播放'}</button>
+                <button type="button" class="workflow-btn" data-workflow-action="restart"${!total ? ' disabled' : ''}>重新播放</button>
+                <button type="button" class="workflow-btn ${playback.expandAll ? 'active' : ''}" data-workflow-action="toggle-expand"${!total ? ' disabled' : ''}>${playback.expandAll ? '返回分步' : '展开全部'}</button>
+              </div>
+            </div>
+            <div class="workflow-progress-track">
+              <div class="workflow-progress-fill" style="width:${progress}%;"></div>
+            </div>
+            ${renderWorkflowTimeline(playback)}
+          </div>
+          ${renderMetricGrid([
+            { label: 'Current Stage', value: current ? current.label : 'N/A' },
+            { label: 'Total Stages', value: String(total) },
+            { label: 'Attempts', value: String(model.attempts.length || 0) },
+            { label: 'Exec Steps', value: String(model.perceptionSteps.length || 0) },
+          ])}
+        </section>
+      `;
+    }
+
+    function renderWorkflowStageCards(playback) {
+      const sections = playback && Array.isArray(playback.sections) ? playback.sections : [];
+      return sections.map((section, index) => {
+        const isVisible = playback.expandAll || index < playback.revealCount;
+        if (!isVisible) return '';
+        const className = index === playback.activeIndex ? 'workflow-section current' : 'workflow-section completed';
+        return `
+          <section class="${className}" data-workflow-section-index="${index}">
+            <div class="workflow-item-header">
+              <div>
+                <div class="workflow-item-title">${escapeHtml(section.title)}</div>
+                <div class="workflow-item-subtitle">${escapeHtml(section.subtitle || '')}</div>
+              </div>
+              <div class="pill-row">
+                ${renderPill(`阶段 ${index + 1}`, 'info')}
+                ${renderPill(section.label, index === playback.activeIndex ? 'active' : (_text(section.state) || 'info'))}
+                ${section.badges || ''}
+              </div>
+            </div>
+            ${section.body}
+          </section>
+        `;
+      }).join('');
+    }
+
+    function renderWorkflowPlayback() {
+      if (!workflowPlayback || !workflowPlayback.model) {
+        renderWorkflowEmptyState();
+        return;
+      }
+
+      workflowPanel.innerHTML = `
+        <div class="workflow-playback">
+          ${renderWorkflowToolbar(workflowPlayback.model, workflowPlayback)}
+          ${renderWorkflowStageCards(workflowPlayback)}
+        </div>
+      `;
+
+      window.requestAnimationFrame(() => {
+        if (!workflowPlayback) return;
+        const currentSection = workflowPanel.querySelector(`[data-workflow-section-index="${workflowPlayback.activeIndex}"]`);
+        if (currentSection) {
+          currentSection.scrollIntoView({
+            block: 'nearest',
+            behavior: workflowPlayback.autoPlay ? 'smooth' : 'auto',
+          });
+        }
+      });
+    }
+
+    function scheduleWorkflowPlaybackAdvance() {
+      clearWorkflowPlaybackTimer();
+      if (!workflowPlayback || !workflowPlayback.autoPlay || workflowPlayback.expandAll) return;
+      const total = Array.isArray(workflowPlayback.sections) ? workflowPlayback.sections.length : 0;
+      if (!total || workflowPlayback.activeIndex >= total - 1) {
+        workflowPlayback.autoPlay = false;
+        renderWorkflowPlayback();
+        return;
+      }
+      workflowPlayback.timer = window.setTimeout(() => {
+        if (!workflowPlayback) return;
+        const totalSteps = Array.isArray(workflowPlayback.sections) ? workflowPlayback.sections.length : 0;
+        const nextIndex = Math.min(totalSteps - 1, workflowPlayback.activeIndex + 1);
+        const reachedEnd = nextIndex >= totalSteps - 1;
+        workflowPlayback.activeIndex = nextIndex;
+        workflowPlayback.revealCount = nextIndex + 1;
+        workflowPlayback.autoPlay = !reachedEnd;
+        renderWorkflowPlayback();
+        if (!reachedEnd) {
+          scheduleWorkflowPlaybackAdvance();
+        }
+      }, WORKFLOW_AUTO_PLAY_MS);
+    }
+
+    function setWorkflowPlaybackStep(nextIndex, options = {}) {
+      if (!workflowPlayback || !Array.isArray(workflowPlayback.sections) || !workflowPlayback.sections.length) return;
+      const total = workflowPlayback.sections.length;
+      const clampedIndex = Math.max(0, Math.min(total - 1, nextIndex));
+      clearWorkflowPlaybackTimer();
+      workflowPlayback.activeIndex = clampedIndex;
+      workflowPlayback.expandAll = Boolean(options.expandAll);
+      workflowPlayback.autoPlay = Boolean(options.autoPlay) && !workflowPlayback.expandAll;
+      workflowPlayback.revealCount = workflowPlayback.expandAll ? total : (clampedIndex + 1);
+      renderWorkflowPlayback();
+      if (workflowPlayback.autoPlay) {
+        scheduleWorkflowPlaybackAdvance();
+      }
+    }
+
+    function renderWorkflow(data, context = {}) {
+      const model = buildWorkflowModel(data, context);
+      const sections = buildWorkflowSections(model);
+      workflowPlayback = {
+        model,
+        sections,
+        activeIndex: sections.length ? 0 : -1,
+        revealCount: sections.length ? 1 : 0,
+        autoPlay: sections.length > 1,
+        expandAll: false,
+        timer: 0,
+      };
+      renderWorkflowPlayback();
+      if (workflowPlayback.autoPlay) {
+        scheduleWorkflowPlaybackAdvance();
+      }
+    }
+
+    function renderAllAnswersAsChat(data) {
+      const result = data && typeof data.result === 'object' ? data.result : {};
+      const sections = [
+        { title: 'Original QA', payload: result.answer_original, tone: 'info' },
+        { title: 'Updated QA', payload: result.answer_initial || result.answer, tone: 'success' },
+        { title: 'Tool-Augmented QA', payload: result.answer_tool_augmented, tone: 'success' },
+      ].filter((item) => hasValue(item.payload) || _answerText(item.payload));
+
+      const timeStr = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      const modelNameBadge = data.model_name
+        ? ` <span style="font-size:10px; background:#e2e8f0; color:#475569; padding:2px 6px; border-radius:10px; margin-left:8px;">🤖 ${escapeHtml(data.model_name)}</span>`
+        : '';
+
+      if (!sections.length) {
+        return `
+          <div class="chat-message">
+            <div class="chat-time">${timeStr}</div>
+            <div class="chat-bubble" style="border-left-color:#e53e3e;">
+              <h4>Execution Failed</h4>
+              <p>${escapeHtml(_text(data && data.qa_answer) || _text(data && data.error) || 'No response returned from the workflow.')}</p>
+            </div>
+          </div>
+        `;
+      }
+
+      return sections.map((section, index) => {
+        const payload = section.payload && typeof section.payload === 'object' ? section.payload : {};
+        const answerText = _answerText(section.payload);
+        const issues = Array.isArray(payload.issues) ? payload.issues : [];
+        const llmRaw = _text(payload.llm_raw);
+        const bubbleStyle = section.tone === 'success'
+          ? 'style="border-left-color:var(--accent-green);"'
+          : 'style="border-left-color:var(--primary);"';
+
+        return `
+          <div class="chat-message">
+            <div class="chat-time">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+              ${timeStr} - ${escapeHtml(section.title)}${index === 1 ? modelNameBadge : ''}
+            </div>
+            <div class="chat-bubble" ${bubbleStyle}>
+              <h4>${escapeHtml(section.title)}</h4>
+              <p>${escapeHtml(answerText || '(No answer text provided)')}</p>
+              ${renderReasonList(payload.reason)}
+              ${issues.length ? `<div class="issues">Issues: ${escapeHtml(issues.join(', '))}</div>` : ''}
+              ${llmRaw ? `<div class="raw">${escapeHtml(llmRaw)}</div>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    workflowPanel.addEventListener('click', (event) => {
+      const control = event.target.closest('[data-workflow-action]');
+      if (!control || !workflowPlayback) return;
+
+      const action = control.getAttribute('data-workflow-action');
+      const total = Array.isArray(workflowPlayback.sections) ? workflowPlayback.sections.length : 0;
+      if (!total) return;
+
+      if (action === 'prev') {
+        setWorkflowPlaybackStep(workflowPlayback.activeIndex - 1, { autoPlay: false, expandAll: false });
+        return;
+      }
+
+      if (action === 'next') {
+        setWorkflowPlaybackStep(workflowPlayback.activeIndex + 1, { autoPlay: false, expandAll: false });
+        return;
+      }
+
+      if (action === 'restart') {
+        setWorkflowPlaybackStep(0, { autoPlay: true, expandAll: false });
+        return;
+      }
+
+      if (action === 'toggle-play') {
+        if (workflowPlayback.autoPlay) {
+          clearWorkflowPlaybackTimer();
+          workflowPlayback.autoPlay = false;
+          renderWorkflowPlayback();
+          return;
+        }
+        const restartFromHead = workflowPlayback.activeIndex >= total - 1;
+        setWorkflowPlaybackStep(restartFromHead ? 0 : workflowPlayback.activeIndex, { autoPlay: true, expandAll: false });
+        return;
+      }
+
+      if (action === 'toggle-expand') {
+        if (workflowPlayback.expandAll) {
+          setWorkflowPlaybackStep(workflowPlayback.activeIndex, { autoPlay: false, expandAll: false });
+          return;
+        }
+        setWorkflowPlaybackStep(workflowPlayback.activeIndex, { autoPlay: false, expandAll: true });
+        return;
+      }
+
+      if (action === 'jump') {
+        const targetIndex = Number(control.getAttribute('data-workflow-index'));
+        if (Number.isFinite(targetIndex)) {
+          setWorkflowPlaybackStep(targetIndex, { autoPlay: false, expandAll: false });
+        }
+      }
+    });
+
+    function setStatus(text, stateClass) {
+      statusText.textContent = text;
+      const indicator = statusBox.querySelector('.indicator');
+      if (stateClass === 'active') {
+        indicator.style.background = 'var(--primary)';
+        indicator.style.boxShadow = '0 0 0 2px rgba(82, 137, 219, 0.2)';
+      } else if (stateClass === 'success') {
+        indicator.style.background = 'var(--accent-green)';
+        indicator.style.boxShadow = '0 0 0 2px rgba(72, 166, 95, 0.2)';
+      } else if (stateClass === 'error') {
+        indicator.style.background = '#e53e3e';
+        indicator.style.boxShadow = '0 0 0 2px rgba(229, 62, 62, 0.2)';
+      } else {
+        indicator.style.background = '#dcdfe6';
+        indicator.style.boxShadow = 'none';
+      }
+    }
+
     function setAnnoMode(mode, activeBtn) {
       annoMode = mode;
-      modeBtns.forEach(b => b.classList.remove('active'));
+      modeBtns.forEach((button) => button.classList.remove('active'));
       activeBtn.classList.add('active');
     }
-    btnModePoint.addEventListener('click', () => setAnnoMode('point', btnModePoint));
-    btnModeLine.addEventListener('click', () => setAnnoMode('line', btnModeLine));
-    btnModeBox.addEventListener('click', () => setAnnoMode('box', btnModeBox));
 
     function drawAnnotations() {
       annoCtx.clearRect(0, 0, annoCanvas.width, annoCanvas.height);
-      annoCtx.strokeStyle = '#ef4444'; // Red
+      annoCtx.strokeStyle = '#ef4444';
       annoCtx.fillStyle = '#ef4444';
-      annoCtx.lineWidth = Math.max(2, annoCanvas.width / 300); // Scale line width by resolution
+      annoCtx.lineWidth = Math.max(2, annoCanvas.width / 300);
 
-      annotations.forEach(a => {
-        if (a.type === 'point') {
+      annotations.forEach((item) => {
+        if (item.type === 'point') {
           annoCtx.beginPath();
-          annoCtx.arc(a.x, a.y, Math.max(4, annoCanvas.width / 150), 0, Math.PI * 2);
+          annoCtx.arc(item.x, item.y, Math.max(4, annoCanvas.width / 150), 0, Math.PI * 2);
           annoCtx.fill();
-        } else if (a.type === 'line') {
+        } else if (item.type === 'line') {
           annoCtx.beginPath();
-          annoCtx.moveTo(a.x1, a.y1);
-          annoCtx.lineTo(a.x2, a.y2);
+          annoCtx.moveTo(item.x1, item.y1);
+          annoCtx.lineTo(item.x2, item.y2);
           annoCtx.stroke();
-        } else if (a.type === 'box') {
-          annoCtx.strokeRect(a.x, a.y, a.w, a.h);
+        } else if (item.type === 'box') {
+          annoCtx.strokeRect(item.x, item.y, item.w, item.h);
           annoCtx.fillStyle = 'rgba(239, 68, 68, 0.15)';
-          annoCtx.fillRect(a.x, a.y, a.w, a.h);
+          annoCtx.fillRect(item.x, item.y, item.w, item.h);
           annoCtx.fillStyle = '#ef4444';
         }
       });
@@ -861,28 +2475,52 @@
       const scaleY = annoCanvas.height / rect.height;
       return {
         x: (evt.clientX - rect.left) * scaleX,
-        y: (evt.clientY - rect.top) * scaleY
+        y: (evt.clientY - rect.top) * scaleY,
       };
     }
 
-    annoCanvas.addEventListener('mousedown', (e) => {
+    function syncAnnotationCanvasToResult() {
+      if (!resultImage.src || resultImage.style.display === 'none') return;
+      annoCanvas.width = resultImage.naturalWidth || 800;
+      annoCanvas.height = resultImage.naturalHeight || 600;
+      annoCanvas.style.pointerEvents = 'auto';
+      const rect = resultImage.getBoundingClientRect();
+      annoCanvas.style.width = `${rect.width}px`;
+      annoCanvas.style.height = `${rect.height}px`;
+      drawAnnotations();
+    }
+
+    async function renderEnhancedBlob() {
+      if (!window.currentResultUrl || !resultImage.src) return null;
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = resultImage.naturalWidth || resultImage.width || 1;
+      exportCanvas.height = resultImage.naturalHeight || resultImage.height || 1;
+      const ctx = exportCanvas.getContext('2d');
+      ctx.drawImage(resultImage, 0, 0, exportCanvas.width, exportCanvas.height);
+      ctx.drawImage(annoCanvas, 0, 0, exportCanvas.width, exportCanvas.height);
+      return new Promise((resolve) => exportCanvas.toBlob(resolve, 'image/png'));
+    }
+
+    btnModePoint.addEventListener('click', () => setAnnoMode('point', btnModePoint));
+    btnModeLine.addEventListener('click', () => setAnnoMode('line', btnModeLine));
+    btnModeBox.addEventListener('click', () => setAnnoMode('box', btnModeBox));
+
+    annoCanvas.addEventListener('mousedown', (event) => {
       isDrawing = true;
-      const pos = getMousePos(e);
+      const pos = getMousePos(event);
       startX = pos.x;
       startY = pos.y;
       if (annoMode === 'point') {
         annotations.push({ type: 'point', x: startX, y: startY });
         drawAnnotations();
-        isDrawing = false; // Point is instant
+        isDrawing = false;
       }
     });
 
-    annoCanvas.addEventListener('mousemove', (e) => {
+    annoCanvas.addEventListener('mousemove', (event) => {
       if (!isDrawing) return;
-      const pos = getMousePos(e);
-      drawAnnotations(); // Redraw existing
-
-      // Draw current preview
+      const pos = getMousePos(event);
+      drawAnnotations();
       annoCtx.strokeStyle = '#ef4444';
       annoCtx.lineWidth = Math.max(2, annoCanvas.width / 300);
       if (annoMode === 'line') {
@@ -898,10 +2536,10 @@
       }
     });
 
-    annoCanvas.addEventListener('mouseup', (e) => {
+    annoCanvas.addEventListener('mouseup', (event) => {
       if (!isDrawing) return;
       isDrawing = false;
-      const pos = getMousePos(e);
+      const pos = getMousePos(event);
       if (annoMode === 'line') {
         if (Math.abs(pos.x - startX) > 2 || Math.abs(pos.y - startY) > 2) {
           annotations.push({ type: 'line', x1: startX, y1: startY, x2: pos.x, y2: pos.y });
@@ -931,36 +2569,13 @@
       drawAnnotations();
     });
 
-    function waitForImageLoad(src) {
-      return new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = reject;
-        img.src = src;
-      });
-    }
-
-    async function renderEnhancedBlob() {
-      if (!window.currentResultUrl || !resultImage.src) return null;
-      const exportCanvas = document.createElement('canvas');
-      exportCanvas.width = resultImage.naturalWidth || resultImage.width || 1;
-      exportCanvas.height = resultImage.naturalHeight || resultImage.height || 1;
-      const ctx = exportCanvas.getContext('2d');
-      // Draw output image
-      ctx.drawImage(resultImage, 0, 0, exportCanvas.width, exportCanvas.height);
-      // Draw annotations overlapping it
-      ctx.drawImage(annoCanvas, 0, 0, exportCanvas.width, exportCanvas.height);
-
-      return await new Promise((resolve) => exportCanvas.toBlob(resolve, 'image/png'));
-    }
-
-    // Preview Original SVG
-    svgFileInput.addEventListener('change', function (e) {
-      const file = e.target.files[0];
-      if (file && file.type === 'image/svg+xml') {
+    svgFileInput.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      const isSvg = !!file && (file.type === 'image/svg+xml' || _text(file.name).toLowerCase().endsWith('.svg'));
+      if (isSvg) {
         const reader = new FileReader();
-        reader.onload = async function (evt) {
-          sourcePreviewUrl = evt.target.result;
+        reader.onload = (loadEvent) => {
+          sourcePreviewUrl = loadEvent.target.result;
           originalImage.src = sourcePreviewUrl;
           originalImage.style.display = 'block';
           origPlaceholderText.style.display = 'none';
@@ -972,100 +2587,13 @@
         originalImage.removeAttribute('src');
         originalImage.style.display = 'none';
         origPlaceholderText.style.display = 'flex';
-        origPlaceholderText.innerHTML = file ? "Invalid format" : "Awaiting Source File (.svg)";
+        origPlaceholderText.textContent = file ? 'Invalid format' : 'Awaiting Source File (.svg)';
       }
     });
 
-    function setStatus(text, stateClass) {
-      statusText.textContent = text;
-      const indicator = statusBox.querySelector('.indicator');
-      if (stateClass === 'active') {
-        indicator.style.background = 'var(--primary)';
-        indicator.style.boxShadow = '0 0 0 2px rgba(82, 137, 219, 0.2)';
-      } else if (stateClass === 'success') {
-        indicator.style.background = 'var(--accent-green)';
-        indicator.style.boxShadow = '0 0 0 2px rgba(72, 166, 95, 0.2)';
-      } else if (stateClass === 'error') {
-        indicator.style.background = '#e53e3e';
-        indicator.style.boxShadow = '0 0 0 2px rgba(229, 62, 62, 0.2)';
-      } else {
-        indicator.style.background = '#dcdfe6';
-        indicator.style.boxShadow = 'none';
-      }
-    }
-
-    function _text(v) {
-      if (v === null || v === undefined) return '';
-      return String(v).trim();
-    }
-
-    function _answerText(answerObj) {
-      if (answerObj && typeof answerObj === 'object') return _text(answerObj.answer);
-      return _text(answerObj);
-    }
-
-    // Convert answers into Chat Bubbles
-    function renderAllAnswersAsChat(data) {
-      const result = (data && data.result && typeof data.result === 'object') ? data.result : {};
-      const sections = [
-        ['Answer', result.answer_initial, '#primary'],
-      ];
-
-      let html = '';
-      const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
-
-      let hasBlocks = false;
-      const modelNameBadge = data.model_name ? ` <span style="font-size:10px; background:#e2e8f0; color:#475569; padding:2px 6px; border-radius:10px; margin-left:8px;">🤖 ${data.model_name}</span>` : '';
-
-      for (const [title, value, type] of sections) {
-        const answerText = _answerText(value);
-        const llmRaw = (value && typeof value === 'object') ? _text(value.llm_raw) : '';
-        const issues = (value && typeof value === 'object' && Array.isArray(value.issues))
-          ? value.issues.join(', ')
-          : '';
-
-        if (!answerText && !llmRaw && !issues) continue;
-        hasBlocks = true;
-
-        let bubbleHTML = `
-      <div class="chat-message">
-        <div class="chat-time">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-          ${timeStr} - ${title}${title === 'Answer' ? modelNameBadge : ''}
-        </div>
-        <div class="chat-bubble" ${title === 'Answer' ? 'style="border-left-color:var(--accent-green);"' : ''}>
-          <h4>${title}</h4>
-          <p>${answerText || '(No answer text provided)'}</p>
-      `;
-        if (issues) bubbleHTML += `<div class="issues">Issues: ${issues}</div>`;
-        if (llmRaw) bubbleHTML += `<div class="raw">${llmRaw}</div>`;
-
-        bubbleHTML += `
-        </div>
-      </div>`;
-        html += bubbleHTML;
-      }
-
-      if (!hasBlocks) {
-        return `
-      <div class="chat-message">
-        <div class="chat-time">${timeStr}</div>
-        <div class="chat-bubble" style="border-left-color:#e53e3e;">
-          <h4>Execution Failed</h4>
-          <p>${_text(data && data.qa_answer) || 'No response returned from the workflow.'}</p>
-        </div>
-      </div>`;
-      }
-
-      return html;
-    }
-
-    let lastSubmittedQuery = '';
-
-    const questionInput = document.getElementById('question');
-    questionInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
+    questionInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
         const hasText = questionInput.value.trim() !== '';
         const hasAnnotations = annotations.length > 0;
         if (!btn.disabled && (hasText || hasAnnotations)) {
@@ -1074,95 +2602,98 @@
       }
     });
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
 
-      const rawQ = questionInput.value.trim();
-      const userQ = rawQ || lastSubmittedQuery; // Fallback to last query if empty
+      const rawQuestion = questionInput.value.trim();
+      const userQuestion = rawQuestion || lastSubmittedQuery;
+      const hadAnnotations = annotations.length > 0;
 
-      if (!userQ && annotations.length === 0) return; // Prevent completely empty submission
-
-      if (rawQ) {
-        lastSubmittedQuery = rawQ; // Update if new text provided
-      }
+      if (!userQuestion && !hadAnnotations) return;
+      if (rawQuestion) lastSubmittedQuery = rawQuestion;
 
       btn.disabled = true;
 
-      // Add User Query to Chat
-      const displayQ = rawQ ? userQ : "(Visual Instruction Provided via Canvas)";
-      const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
-      const userMsg = `
-    <div class="chat-message" style="align-self: flex-end;">
-      <div class="chat-time" style="justify-content: flex-end;">User Query - ${timeStr}</div>
-      <div class="chat-bubble" style="background:#f0f4ff; border-left:none; border-right: 3px solid var(--primary); border-radius: 6px 0 6px 6px;">
-        <p>${displayQ.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
-      </div>
-    </div>`;
+      const displayQuestion = rawQuestion ? userQuestion : '(Visual Instruction Provided via Canvas)';
+      const timeStr = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      const userMessage = `
+        <div class="chat-message" style="align-self: flex-end;">
+          <div class="chat-time" style="justify-content: flex-end;">User Query - ${timeStr}</div>
+          <div class="chat-bubble" style="background:#f0f4ff; border-left:none; border-right: 3px solid var(--primary); border-radius: 6px 0 6px 6px;">
+            <p>${escapeHtml(displayQuestion)}</p>
+          </div>
+        </div>
+      `;
 
       if (qaAnswer.querySelector('.empty-state')) {
         qaAnswer.innerHTML = '';
       }
-      qaAnswer.innerHTML += userMsg;
+      qaAnswer.innerHTML += userMessage;
       qaAnswer.scrollTop = qaAnswer.scrollHeight;
 
+      renderWorkflowPending({ userQ: userQuestion, displayQ: displayQuestion, hadAnnotations });
       setStatus('Processing instruction...', 'active');
 
       if (!window.currentResultUrl) {
         resultPlaceholderText.style.display = 'flex';
-        resultPlaceholderText.textContent = "Executing transformation...";
+        resultPlaceholderText.textContent = 'Executing transformation...';
       } else {
         resultImage.style.opacity = '0.5';
       }
 
       try {
-        const fd = new FormData(form);
-        fd.set('question', userQ);
+        const formData = new FormData(form);
+        formData.set('question', userQuestion);
         const enhancedBlob = await renderEnhancedBlob();
         if (enhancedBlob) {
-          fd.set('enhanced_image', enhancedBlob, 'enhanced.png');
+          formData.set('enhanced_image', enhancedBlob, 'enhanced.png');
         }
-        const respPromise = fetch('/api/run', { method: 'POST', body: fd });
-        questionInput.value = '';
-        const resp = await respPromise;
-        const data = await resp.json();
 
-        const newMessages = renderAllAnswersAsChat(data);
-        qaAnswer.innerHTML += newMessages;
+        questionInput.value = '';
+        const response = await fetch('/api/run', { method: 'POST', body: formData });
+        const data = await response.json();
+
+        renderWorkflow(data, { userQ: userQuestion, displayQ: displayQuestion, hadAnnotations });
+        qaAnswer.innerHTML += renderAllAnswersAsChat(data);
         qaAnswer.scrollTop = qaAnswer.scrollHeight;
 
         if (data.output_image_url) {
           window.currentResultUrl = data.output_image_url;
           document.getElementById('imageToolbar').style.display = 'flex';
-
-          // Show the result image
           resultImage.style.display = 'block';
           resultImage.onload = () => {
-            // Sync canvas size to loaded output image
-            annoCanvas.width = resultImage.naturalWidth || 800;
-            annoCanvas.height = resultImage.naturalHeight || 600;
-            annoCanvas.style.pointerEvents = 'auto'; // enable drawing
-
-            // Match canvas visual size exactly to the image's visual size
-            const rect = resultImage.getBoundingClientRect();
-            annoCanvas.style.width = `${rect.width}px`;
-            annoCanvas.style.height = `${rect.height}px`;
-
-            drawAnnotations();
+            syncAnnotationCanvasToResult();
           };
-          resultImage.src = data.output_image_url + '?t=' + Date.now();
+          resultImage.src = `${data.output_image_url}${data.output_image_url.includes('?') ? '&' : '?'}t=${Date.now()}`;
           resultImage.style.opacity = '1';
           resultPlaceholderText.style.display = 'none';
+        }
+
+        if (response.ok) {
           setStatus('Analysis complete', 'success');
-        } else if (!resp.ok) {
+        } else {
           setStatus('Execution Failure', 'error');
           if (data.error) {
-            qaAnswer.innerHTML += `<div class="chat-message"><div class="chat-bubble" style="border-left-color:#e53e3e;"><h4>Error</h4><p>${data.error}</p></div></div>`;
+            qaAnswer.innerHTML += `
+              <div class="chat-message">
+                <div class="chat-bubble" style="border-left-color:#e53e3e;">
+                  <h4>Error</h4>
+                  <p>${escapeHtml(data.error)}</p>
+                </div>
+              </div>
+            `;
           }
-        } else {
-          setStatus('Analysis complete', 'success');
         }
       } catch (err) {
-        qaAnswer.innerHTML += `<div class="chat-message"><div class="chat-bubble" style="border-left-color:#e53e3e;"><h4>Network Error</h4><p>${String(err)}</p></div></div>`;
+        qaAnswer.innerHTML += `
+          <div class="chat-message">
+            <div class="chat-bubble" style="border-left-color:#e53e3e;">
+              <h4>Network Error</h4>
+              <p>${escapeHtml(String(err))}</p>
+            </div>
+          </div>
+        `;
+        renderWorkflowEmptyState(`网络异常，未拿到 workflow 结果：${String(err)}`);
         setStatus('Network exception occurred', 'error');
       } finally {
         btn.disabled = false;
@@ -1170,8 +2701,6 @@
         qaAnswer.scrollTop = qaAnswer.scrollHeight;
       }
     });
-    // Toolbar Logic
-    let currentZoom = 1;
 
     document.getElementById('btnZoomIn').addEventListener('click', () => {
       currentZoom += 0.25;
@@ -1187,14 +2716,15 @@
 
     document.getElementById('btnZoomReset').addEventListener('click', () => {
       currentZoom = 1;
-      resultImage.style.transform = `scale(1)`;
-      annoCanvas.style.transform = `scale(1)`;
+      resultImage.style.transform = 'scale(1)';
+      annoCanvas.style.transform = 'scale(1)';
+      syncAnnotationCanvasToResult();
     });
 
     document.getElementById('btnFullscreen').addEventListener('click', () => {
       const card = document.getElementById('outputCard');
       if (!document.fullscreenElement) {
-        card.requestFullscreen().catch(err => {
+        card.requestFullscreen().catch((err) => {
           console.error(`Error attempting to enable fullscreen: ${err.message}`);
         });
       } else {
@@ -1203,16 +2733,19 @@
     });
 
     document.getElementById('btnDownload').addEventListener('click', () => {
-      if (window.currentResultUrl) {
-        const a = document.createElement('a');
-        a.href = window.currentResultUrl;
-        a.download = 'modified_chart_output';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }
+      if (!window.currentResultUrl) return;
+      const link = document.createElement('a');
+      link.href = window.currentResultUrl;
+      link.download = 'modified_chart_output';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     });
 
+    window.addEventListener('resize', syncAnnotationCanvasToResult);
+    document.addEventListener('fullscreenchange', () => window.setTimeout(syncAnnotationCanvasToResult, 80));
+
+    renderWorkflowEmptyState('这里会展示问题拆解、操作计划、执行步骤、render 校验和答案链路。');
   </script>
 
 </body>

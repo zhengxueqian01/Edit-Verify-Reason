@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from main import run_main
+try:
+    from .main import run_main
+except ImportError:
+    from main import run_main
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
