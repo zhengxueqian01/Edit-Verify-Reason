@@ -13,7 +13,7 @@ PROJECT_SRC = os.path.abspath(os.path.dirname(__file__))
 if PROJECT_SRC not in sys.path:
     sys.path.insert(0, PROJECT_SRC)
 
-from chart_agent.config import get_task_model_config
+from chart_agent.config import resolve_task_model_config
 from chart_agent.core.perception_graph import run_perception
 from chart_agent.core.trace import append_trace
 from chart_agent.core.answerer import answer_question
@@ -42,18 +42,41 @@ SUPPORTED_SVG_CHART_TYPES = {"scatter", "line", "area"}
 TOOL_AUG_CONFIDENCE_THRESHOLD = 0.85
 
 
-def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
+def run_main(
+    inputs: dict[str, Any],
+    *,
+    event_callback: Any | None = None,
+) -> dict[str, Any]:
     # Disable LangSmith tracing in this project runtime unless the user re-enables it explicitly.
     os.environ["LANGSMITH_TRACING"] = "false"
     os.environ["LANGCHAIN_TRACING_V2"] = "false"
-    splitter_llm = make_llm(get_task_model_config("splitter"))
-    planner_llm = make_llm(get_task_model_config("planner"))
-    executor_llm = make_llm(get_task_model_config("executor"))
-    answer_llm = make_llm(get_task_model_config("answer"))
-    tool_planner_llm = make_llm(get_task_model_config("tool_planner"))
+    model_overrides = _normalize_model_overrides(inputs.get("model_overrides"))
+    splitter_config = resolve_task_model_config("splitter", model_overrides)
+    planner_config = resolve_task_model_config("planner", model_overrides)
+    executor_config = resolve_task_model_config("executor", model_overrides)
+    answer_config = resolve_task_model_config("answer", model_overrides)
+    tool_planner_config = resolve_task_model_config("tool_planner", model_overrides)
+    splitter_llm = make_llm(splitter_config)
+    planner_llm = make_llm(planner_config)
+    executor_llm = make_llm(executor_config)
+    answer_llm = make_llm(answer_config)
+    tool_planner_llm = make_llm(tool_planner_config)
     structured_context = _normalize_structured_context(inputs.get("structured_update_context"))
     update_question, qa_question, split_info, split_data_change = _resolve_questions(inputs, splitter_llm)
     structured_context = _merge_structured_data_change(structured_context, split_data_change)
+    _emit_event(
+        event_callback,
+        "question_split_done",
+        {
+            "result": {
+                "question_split": split_info,
+                "update_question": update_question,
+                "qa_question": qa_question,
+                "resolved_data_change": structured_context.get("data_change", {}),
+                "operation_text": split_info.get("operation_text") or update_question,
+            }
+        },
+    )
     update_question = _enrich_update_question(
         update_question=update_question,
         structured_context=structured_context,
@@ -113,6 +136,22 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
 
         operation_plan = _llm_plan_update(planned_question, str(chart_type), planner_llm, retry_hint=retry_hint)
         last_operation_plan = operation_plan
+        _emit_event(
+            event_callback,
+            "plan_done",
+            {
+                "attempt": attempt,
+                "chart_type": chart_type,
+                "result": {
+                    "question_split": split_info,
+                    "operation_plan": operation_plan,
+                    "update_question": update_question,
+                    "qa_question": qa_question,
+                    "resolved_data_change": structured_context.get("data_change", {}),
+                    "operation_text": split_info.get("operation_text") or update_question,
+                },
+            },
+        )
         normalized_question = str(operation_plan.get("normalized_question") or planned_question)
         planned_question = _choose_planned_question(planned_question, normalized_question)
         plan_steps = _operation_steps_from_plan(operation_plan, planned_question, structured_context)
@@ -135,6 +174,24 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
             )
             last_output_image = None
             last_render_check = render_check
+            _emit_event(
+                event_callback,
+                "render_check_done",
+                {
+                    "attempt": attempt,
+                    "chart_type": chart_type,
+                    "result": {
+                        "question_split": split_info,
+                        "operation_plan": operation_plan,
+                        "render_check": render_check,
+                        "attempt_logs": attempt_logs,
+                        "update_question": update_question,
+                        "qa_question": qa_question,
+                        "resolved_data_change": structured_context.get("data_change", {}),
+                        "operation_text": split_info.get("operation_text") or update_question,
+                    },
+                },
+            )
             retry_hint = "llm planning failed"
             continue
 
@@ -150,6 +207,7 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
                 chart_type=chart_type,
                 llm=executor_llm,
                 used_scatter_points=used_scatter_points,
+                event_callback=event_callback,
             )
         except Exception as exc:
             render_check = {
@@ -170,6 +228,25 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
             )
             last_output_image = None
             last_render_check = render_check
+            _emit_event(
+                event_callback,
+                "render_check_done",
+                {
+                    "attempt": attempt,
+                    "chart_type": chart_type,
+                    "result": {
+                        "question_split": split_info,
+                        "operation_plan": operation_plan,
+                        "render_check": render_check,
+                        "attempt_logs": attempt_logs,
+                        "perception_steps": perception_steps,
+                        "update_question": update_question,
+                        "qa_question": qa_question,
+                        "resolved_data_change": structured_context.get("data_change", {}),
+                        "operation_text": split_info.get("operation_text") or update_question,
+                    },
+                },
+            )
             retry_hint = str(exc)
             continue
 
@@ -204,6 +281,26 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
         last_output_image = output_image
         last_render_check = render_check
         last_perception_steps = perception_steps
+        _emit_event(
+            event_callback,
+            "render_check_done",
+            {
+                "attempt": attempt,
+                "chart_type": chart_type,
+                "result": {
+                    "question_split": split_info,
+                    "operation_plan": operation_plan,
+                    "render_check": render_check,
+                    "attempt_logs": attempt_logs,
+                    "perception_steps": perception_steps,
+                    "output_image_path": output_image,
+                    "update_question": update_question,
+                    "qa_question": qa_question,
+                    "resolved_data_change": structured_context.get("data_change", {}),
+                    "operation_text": split_info.get("operation_text") or update_question,
+                },
+            },
+        )
         if _is_render_check_passed(render_check):
             break
         retry_hint = "; ".join(render_check.get("issues", [])[:4]) or "render validation failed"
@@ -226,6 +323,14 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
         "perception_steps": last_perception_steps,
         "answer_original_input": answer_original_input,
         "answer_original": answer_original,
+        "model_overrides": model_overrides,
+        "resolved_task_models": {
+            "splitter": splitter_config.model,
+            "planner": planner_config.model,
+            "executor": executor_config.model,
+            "answer": answer_config.model,
+            "tool_planner": tool_planner_config.model,
+        },
     }
 
     allow_answer_after_failed_render = _should_answer_after_failed_render(
@@ -323,6 +428,15 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
     )
     output["answer_initial"] = initial_answer
     output["answer"] = initial_answer
+    _emit_event(
+        event_callback,
+        "answer_done",
+        {
+            "result": {
+                **output,
+            }
+        },
+    )
 
     final_step_svg_path = ""
     latest_step_logs = answer_data_summary.get("latest_step_logs", [])
@@ -372,7 +486,31 @@ def run_main(inputs: dict[str, Any]) -> dict[str, Any]:
         tool_phase=tool_phase,
         answer_llm=answer_llm,
     )
+    _emit_event(
+        event_callback,
+        "tool_phase_done",
+        {
+            "result": {
+                **output,
+            }
+        },
+    )
+    _emit_event(
+        event_callback,
+        "completed",
+        {
+            "result": {
+                **output,
+            }
+        },
+    )
     return output
+
+
+def _emit_event(event_callback: Any | None, event_type: str, payload: dict[str, Any]) -> None:
+    if event_callback is None:
+        return
+    event_callback(event_type, payload)
 
 
 def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
@@ -429,6 +567,18 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
     if not llm_success:
         split_info["reason"] = "llm_split_failed_fallback"
     return update_question, qa_question, split_info, cand_data_change
+
+
+def _normalize_model_overrides(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for key, value in raw.items():
+        task = str(key or "").strip()
+        model_name = str(value or "").strip()
+        if task and model_name:
+            normalized[task] = model_name
+    return normalized
 
 
 def _should_force_visual_tool_phase(question: str, chart_type: str) -> bool:
@@ -1175,6 +1325,7 @@ def _execute_planned_steps(
     chart_type: str,
     llm: Any,
     used_scatter_points: list[dict[str, float]],
+    event_callback: Any | None = None,
 ) -> tuple[str | None, list[dict[str, Any]], list[dict[str, Any]], Any, list[dict[str, float]]]:
     steps = _operation_steps_from_plan(operation_plan, planned_question, structured_context)
     step_logs: list[dict[str, Any]] = []
@@ -1186,6 +1337,20 @@ def _execute_planned_steps(
 
     for idx, step in enumerate(steps):
         step_q = _render_structured_step_question(step)
+        _emit_event(
+            event_callback,
+            "step_started",
+            {
+                "step": {
+                    "index": idx + 1,
+                    "operation": step.get("operation"),
+                    "question": step_q,
+                    "question_hint": step.get("question_hint"),
+                    "operation_target": step.get("operation_target"),
+                    "data_change": step.get("data_change"),
+                }
+            },
+        )
         step_inputs = dict(inputs)
         step_inputs["svg_path"] = current_svg
         step_inputs["question"] = step_q
@@ -1262,6 +1427,17 @@ def _execute_planned_steps(
                 "output_svg_path": step_svg,
                 "output_image_path": output_image,
             }
+        )
+        _emit_event(
+            event_callback,
+            "step_finished",
+            {
+                "step": perception_steps[-1],
+                "step_log": step_logs[-1],
+                "perception_steps": perception_steps,
+                "step_logs": step_logs,
+                "output_image_path": output_image,
+            },
         )
 
     return output_image, step_logs, perception_steps, last_state, scatter_points

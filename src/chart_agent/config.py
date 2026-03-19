@@ -111,6 +111,7 @@ TASK_MODELS: dict[str, str] = {
     "answer": _get_env("ANSWER_MODEL", "gpt")
     or "gpt",
 }
+WEB_SELECTABLE_TASKS: tuple[str, ...] = ("splitter", "planner", "executor", "answer", "tool_planner")
 
 
 def get_model_config(name: str | None = None) -> ModelConfig:
@@ -133,6 +134,56 @@ def get_task_model_config(task: str) -> ModelConfig:
             return config
     available = ", ".join(sorted(MODEL_CONFIGS.keys()))
     raise KeyError(f"Unknown model config '{model_value}'. Available: {available}")
+
+
+def get_task_model_name(task: str) -> str:
+    if task not in TASK_MODELS:
+        available = ", ".join(sorted(TASK_MODELS.keys()))
+        raise KeyError(f"Unknown task '{task}'. Available: {available}")
+    return TASK_MODELS[task]
+
+
+def resolve_task_model_config(task: str, overrides: dict[str, str] | None = None) -> ModelConfig:
+    model_value = ""
+    if isinstance(overrides, dict):
+        model_value = str(overrides.get(task) or "").strip()
+    if not model_value:
+        return get_task_model_config(task)
+    if model_value in MODEL_CONFIGS:
+        return MODEL_CONFIGS[model_value]
+    for config in MODEL_CONFIGS.values():
+        if config.model == model_value:
+            return config
+    available = ", ".join(sorted(MODEL_CONFIGS.keys()))
+    raise KeyError(f"Unknown model config '{model_value}' for task '{task}'. Available: {available}")
+
+
+def get_web_model_options() -> list[dict[str, str | float | None]]:
+    options: list[dict[str, str | float | None]] = []
+    for key, config in sorted(MODEL_CONFIGS.items()):
+        options.append(
+            {
+                "key": key,
+                "name": config.name,
+                "model": config.model,
+                "base_url": config.base_url,
+                "temperature": config.temperature,
+            }
+        )
+    return options
+
+
+def get_web_task_model_defaults() -> dict[str, dict[str, str | None]]:
+    defaults: dict[str, dict[str, str | None]] = {}
+    for task in WEB_SELECTABLE_TASKS:
+        config = get_task_model_config(task)
+        defaults[task] = {
+            "task": task,
+            "selected": get_task_model_name(task),
+            "resolved_model": config.model,
+            "base_url": config.base_url,
+        }
+    return defaults
 
 
 def get_perception_max_retries() -> int:

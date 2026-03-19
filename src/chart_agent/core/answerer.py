@@ -6,6 +6,11 @@ from pathlib import Path
 import re
 from typing import Any
 
+ANSWER_SYSTEM_PROMPT = (
+    "Return ONLY valid JSON. Do not include any extra text.\n"
+    'Schema: {"answer": string, "confidence": number between 0 and 1, "reason": [string]}'
+)
+
 
 def answer_question(
     *,
@@ -17,22 +22,20 @@ def answer_question(
     llm: Any,
 ) -> dict[str, Any]:
     cluster_result = data_summary.get("cluster_result")
-    cluster_params = data_summary.get("cluster_params")
     prompt_text = (
-        "Return ONLY valid JSON. Do not include any extra text.\n"
-        "Schema: {\"answer\": string, \"confidence\": number between 0 and 1, \"reason\": [string]}\n"
-        "Use the provided image to answer the QA question only.\n"
         f"{_image_context_prompt_line(image_context_note)}"
-        f"QA Question: {qa_question}\n"
-        f"Chart type: {chart_type}\n"
-        f"Image path (for reference only): {output_image_path}\n"
-        f"{_cluster_prompt_block(cluster_params)}"
+        f"Input: {qa_question}\n"
     )
-    # print(qa_question)
+    print("prompt:",prompt_text)
 
     content = ""
     try:
-        response = _invoke_multimodal_or_text(llm, prompt_text, output_image_path)
+        response = _invoke_multimodal_or_text(
+            llm,
+            system_prompt=ANSWER_SYSTEM_PROMPT,
+            user_prompt=prompt_text,
+            image_path=output_image_path,
+        )
         content = _coerce_content_to_text(getattr(response, "content", ""))
     except Exception as exc:
         if cluster_result and "cluster" in qa_question.lower():
@@ -43,6 +46,7 @@ def answer_question(
                 "issues": ["llm_call_failed"],
                 "dbscan_result": cluster_result,
                 "prompt": prompt_text,
+                "system_prompt": ANSWER_SYSTEM_PROMPT,
                 }
             )
         return _normalize_answer_payload(
@@ -51,6 +55,7 @@ def answer_question(
             "confidence": 0.0,
             "issues": [str(exc)],
             "prompt": prompt_text,
+            "system_prompt": ANSWER_SYSTEM_PROMPT,
             }
         )
 
@@ -62,6 +67,7 @@ def answer_question(
             "issues": ["llm_response_not_json"],
             "llm_raw": content,
             "prompt": prompt_text,
+            "system_prompt": ANSWER_SYSTEM_PROMPT,
         }
         if cluster_result and "cluster" in qa_question.lower():
             fallback["answer"] = f"DBSCAN found {cluster_result.get('clusters')} clusters."
@@ -71,26 +77,10 @@ def answer_question(
 
     payload["llm_raw"] = content
     payload["prompt"] = prompt_text
+    payload["system_prompt"] = ANSWER_SYSTEM_PROMPT
     if cluster_result:
         payload["dbscan_result"] = cluster_result
     return _normalize_answer_payload(payload)
-
-
-def _cluster_prompt_block(cluster_params: Any) -> str:
-    if not isinstance(cluster_params, dict) or not cluster_params:
-        return ""
-    compact = {key: value for key, value in {
-        "algorithm": cluster_params.get("algorithm"),
-        "mode": cluster_params.get("mode"),
-        "eps": cluster_params.get("eps"),
-        "min_samples": cluster_params.get("min_samples"),
-        "source": cluster_params.get("source"),
-    }.items() if value is not None}
-    return (
-        "Cluster Counting Rule: "
-        "when answering scatter-cluster questions, follow this clustering configuration exactly.\n"
-        f"Cluster Parameters: {json.dumps(compact, ensure_ascii=False)}\n"
-    )
 
 
 def _image_context_prompt_line(image_context_note: str | None) -> str:
@@ -118,17 +108,24 @@ def _normalize_confidence(value: Any) -> float:
     return confidence
 
 
-def _invoke_multimodal_or_text(llm: Any, prompt_text: str, image_path: str | None) -> Any:
+def _invoke_multimodal_or_text(
+    llm: Any,
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    image_path: str | None,
+) -> Any:
     data_url = _image_data_url(image_path)
     if data_url:
         try:
-            from langchain_core.messages import HumanMessage  # type: ignore
+            from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore
 
             return llm.invoke(
                 [
+                    SystemMessage(content=system_prompt),
                     HumanMessage(
                         content=[
-                            {"type": "text", "text": prompt_text},
+                            {"type": "text", "text": user_prompt},
                             {"type": "image_url", "image_url": {"url": data_url}},
                         ]
                     )
@@ -136,7 +133,17 @@ def _invoke_multimodal_or_text(llm: Any, prompt_text: str, image_path: str | Non
             )
         except Exception:
             pass
-    return llm.invoke(prompt_text)
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore
+
+        return llm.invoke(
+            [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ]
+        )
+    except Exception:
+        return llm.invoke(f"{system_prompt}\n\n{user_prompt}")
 
 
 def _image_data_url(path_str: str | None) -> str | None:

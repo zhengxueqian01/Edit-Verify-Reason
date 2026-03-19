@@ -1066,6 +1066,35 @@
       object-fit: contain;
     }
 
+    .model-config-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .model-config-card {
+      border: 1px solid #e6eaf2;
+      border-radius: 8px;
+      padding: 10px;
+      background: #fafbff;
+    }
+
+    .model-config-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #334155;
+      margin-bottom: 6px;
+      text-transform: capitalize;
+    }
+
+    .model-config-meta {
+      margin-top: 6px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #64748b;
+    }
+
     .issues-list {
       margin: 0;
       padding-left: 18px;
@@ -1186,6 +1215,10 @@
       .workflow-item-grid {
         grid-template-columns: 1fr;
       }
+
+      .model-config-grid {
+        grid-template-columns: 1fr;
+      }
     }
 
     @media (max-width: 1120px) {
@@ -1255,6 +1288,14 @@
           <label style="margin-top: 16px;">Max Render Retries ($N$)</label>
           <input id="maxRetries" name="max_render_retries" type="number" min="0" value="2"
             style="width: 100%; border: 1px solid var(--border); padding: 8px 10px; border-radius: 4px; font-size: 13px; color: var(--text); outline: none; transition: border-color 0.2s;" />
+
+          <label style="margin-top: 16px;">Model Routing</label>
+          <div class="model-config-grid" id="modelConfigGrid">
+            <div class="model-config-card" style="grid-column: 1 / -1;">
+              <div class="model-config-title">Loading</div>
+              <div class="model-config-meta">正在读取后端可用模型与任务映射...</div>
+            </div>
+          </div>
 
           <div class="tool-panel">
             <label style="margin-bottom: 8px;">Annotation Mode</label>
@@ -1438,6 +1479,7 @@
     const btnUndoAnno = document.getElementById('btnUndoAnno');
     const btnClearAnno = document.getElementById('btnClearAnno');
     const questionInput = document.getElementById('question');
+    const modelConfigGrid = document.getElementById('modelConfigGrid');
 
     let sourcePreviewUrl = '';
     let lastSubmittedQuery = '';
@@ -1448,11 +1490,21 @@
     let startX = 0;
     let startY = 0;
     let workflowPlayback = null;
+    let modelCatalog = [];
+    let taskModelDefaults = {};
 
     window.currentResultUrl = '';
 
     const modeBtns = [btnModePoint, btnModeLine, btnModeBox];
     const WORKFLOW_AUTO_PLAY_MS = 680;
+    const TASK_MODEL_ORDER = ['splitter', 'planner', 'executor', 'answer', 'tool_planner'];
+    const TASK_MODEL_LABELS = {
+      splitter: 'splitter',
+      planner: 'planner',
+      executor: 'executor',
+      answer: 'answer',
+      tool_planner: 'tool planner',
+    };
 
     function _text(value) {
       if (value === null || value === undefined) return '';
@@ -1462,6 +1514,59 @@
     function _answerText(answerObj) {
       if (answerObj && typeof answerObj === 'object') return _text(answerObj.answer);
       return _text(answerObj);
+    }
+
+    function renderModelSelectors() {
+      if (!Array.isArray(modelCatalog) || !modelCatalog.length) {
+        modelConfigGrid.innerHTML = `
+          <div class="model-config-card" style="grid-column: 1 / -1;">
+            <div class="model-config-title">Unavailable</div>
+            <div class="model-config-meta">未能读取后端模型配置。</div>
+          </div>
+        `;
+        return;
+      }
+
+      modelConfigGrid.innerHTML = TASK_MODEL_ORDER.map((task) => {
+        const taskInfo = taskModelDefaults[task] || {};
+        const selected = _text(taskInfo.selected);
+        const options = modelCatalog.map((item) => {
+          const key = _text(item.key);
+          const modelName = _text(item.model);
+          const selectedAttr = key === selected ? ' selected' : '';
+          return `<option value="${escapeHtml(key)}"${selectedAttr}>${escapeHtml(key)} · ${escapeHtml(modelName)}</option>`;
+        }).join('');
+        return `
+          <div class="model-config-card">
+            <div class="model-config-title">${escapeHtml(TASK_MODEL_LABELS[task] || task)}</div>
+            <select name="model_${escapeHtml(task)}" id="model_${escapeHtml(task)}"
+              style="width:100%; border:1px solid var(--border); padding:8px 10px; border-radius:8px; font-size:12px; color:var(--text); background:#fff;">
+              ${options}
+            </select>
+            <div class="model-config-meta">
+              默认键：${escapeHtml(selected || 'N/A')}<br />
+              实际模型：${escapeHtml(_text(taskInfo.resolved_model) || 'N/A')}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function loadModelCatalog() {
+      try {
+        const response = await fetch('/api/models');
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        modelCatalog = Array.isArray(payload.models) ? payload.models : [];
+        taskModelDefaults = payload.tasks && typeof payload.tasks === 'object' ? payload.tasks : {};
+      } catch (err) {
+        console.error('Failed to load model catalog', err);
+        modelCatalog = [];
+        taskModelDefaults = {};
+      }
+      renderModelSelectors();
     }
 
     function hasValue(value) {
@@ -1864,6 +1969,9 @@
       const resolvedDataChange = result.resolved_data_change && typeof result.resolved_data_change === 'object'
         ? result.resolved_data_change
         : {};
+      const resolvedTaskModels = result.resolved_task_models && typeof result.resolved_task_models === 'object'
+        ? result.resolved_task_models
+        : {};
       const finalAnswer = _answerText(result.answer) || _text(data.qa_answer);
 
       const toolCalls = Array.isArray(toolPhase.tool_calls) ? toolPhase.tool_calls : [];
@@ -1917,6 +2025,7 @@
         qaQuestion,
         splitDataChange,
         resolvedDataChange,
+        resolvedTaskModels,
         finalAnswer,
         toolCalls,
         executedTools,
@@ -1966,6 +2075,7 @@
             <div class="field-label">Planner Input</div>
             <pre class="text-block">${escapeHtml(model.updateQuestion || '(empty)')}</pre>
           </div>
+          ${renderJsonDetails('Task Models', model.resolvedTaskModels)}
           ${renderPreviewStrip(model.inputPreviews)}
         `,
       });
@@ -2234,7 +2344,7 @@
       }).join('');
     }
 
-    function renderWorkflowPlayback() {
+    function renderWorkflowPlayback(options = {}) {
       if (!workflowPlayback || !workflowPlayback.model) {
         renderWorkflowEmptyState();
         return;
@@ -2247,16 +2357,18 @@
         </div>
       `;
 
-      window.requestAnimationFrame(() => {
-        if (!workflowPlayback) return;
-        const currentSection = workflowPanel.querySelector(`[data-workflow-section-index="${workflowPlayback.activeIndex}"]`);
-        if (currentSection) {
-          currentSection.scrollIntoView({
-            block: 'nearest',
-            behavior: workflowPlayback.autoPlay ? 'smooth' : 'auto',
-          });
-        }
-      });
+      if (options.scrollToActive) {
+        window.requestAnimationFrame(() => {
+          if (!workflowPlayback) return;
+          const currentSection = workflowPanel.querySelector(`[data-workflow-section-index="${workflowPlayback.activeIndex}"]`);
+          if (currentSection) {
+            currentSection.scrollIntoView({
+              block: 'nearest',
+              behavior: workflowPlayback.autoPlay ? 'smooth' : 'auto',
+            });
+          }
+        });
+      }
     }
 
     function scheduleWorkflowPlaybackAdvance() {
@@ -2276,7 +2388,7 @@
         workflowPlayback.activeIndex = nextIndex;
         workflowPlayback.revealCount = nextIndex + 1;
         workflowPlayback.autoPlay = !reachedEnd;
-        renderWorkflowPlayback();
+        renderWorkflowPlayback({ scrollToActive: true });
         if (!reachedEnd) {
           scheduleWorkflowPlaybackAdvance();
         }
@@ -2292,7 +2404,7 @@
       workflowPlayback.expandAll = Boolean(options.expandAll);
       workflowPlayback.autoPlay = Boolean(options.autoPlay) && !workflowPlayback.expandAll;
       workflowPlayback.revealCount = workflowPlayback.expandAll ? total : (clampedIndex + 1);
-      renderWorkflowPlayback();
+      renderWorkflowPlayback({ scrollToActive: true });
       if (workflowPlayback.autoPlay) {
         scheduleWorkflowPlaybackAdvance();
       }
@@ -2314,6 +2426,114 @@
       if (workflowPlayback.autoPlay) {
         scheduleWorkflowPlaybackAdvance();
       }
+    }
+
+    function renderWorkflowSnapshot(data, context = {}) {
+      const model = buildWorkflowModel(data, context);
+      const sections = buildWorkflowSections(model);
+      workflowPlayback = {
+        model,
+        sections,
+        activeIndex: sections.length ? sections.length - 1 : -1,
+        revealCount: sections.length,
+        autoPlay: false,
+        expandAll: true,
+        timer: 0,
+      };
+      renderWorkflowPlayback();
+    }
+
+    function updateStreamingStatus(eventName) {
+      const statusMap = {
+        started: '请求已发送，开始执行 workflow...',
+        question_split_done: '问题拆解完成',
+        plan_done: '规划步骤完成',
+        step_started: '正在执行当前 step...',
+        step_finished: '当前 step 已完成',
+        render_check_done: '渲染校验已更新',
+        answer_done: '答案已生成，准备工具增强',
+        tool_phase_done: '工具阶段已完成',
+        completed: 'Analysis complete',
+      };
+      const text = statusMap[eventName] || 'Processing instruction...';
+      const tone = eventName === 'completed' ? 'success' : 'active';
+      setStatus(text, tone);
+    }
+
+    function applyWorkflowSnapshot(eventPayload, context = {}) {
+      const snapshot = eventPayload && typeof eventPayload.snapshot === 'object' ? eventPayload.snapshot : null;
+      if (!snapshot) return;
+      renderWorkflowSnapshot(snapshot, context);
+    }
+
+    async function consumeWorkflowStream(response, context = {}) {
+      if (!response.body) {
+        throw new Error('Streaming response body is unavailable.');
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      let finalSnapshot = null;
+      let finalError = null;
+
+      function processEventBlock(block) {
+        const lines = block.split('\n');
+        let eventName = 'message';
+        const dataLines = [];
+        lines.forEach((line) => {
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5).trim());
+          }
+        });
+        if (!dataLines.length) return;
+        let payload = {};
+        try {
+          payload = JSON.parse(dataLines.join('\n'));
+        } catch (err) {
+          console.error('Failed to parse workflow stream payload', err);
+          return;
+        }
+        if (eventName === 'error') {
+          finalError = payload;
+          return;
+        }
+        updateStreamingStatus(eventName);
+        applyWorkflowSnapshot(payload, context);
+        if (eventName === 'completed') {
+          finalSnapshot = payload.snapshot || null;
+        }
+      }
+
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        let boundaryIndex = buffer.indexOf('\n\n');
+        while (boundaryIndex >= 0) {
+          const block = buffer.slice(0, boundaryIndex).trim();
+          buffer = buffer.slice(boundaryIndex + 2);
+          if (block) {
+            processEventBlock(block);
+          }
+          boundaryIndex = buffer.indexOf('\n\n');
+        }
+        if (done) {
+          if (buffer.trim()) {
+            processEventBlock(buffer.trim());
+          }
+          break;
+        }
+      }
+
+      if (finalError) {
+        const message = _text(finalError.error) || 'Unknown streaming error';
+        throw new Error(message);
+      }
+      if (!finalSnapshot) {
+        throw new Error('Workflow stream ended without a completed snapshot.');
+      }
+      return finalSnapshot;
     }
 
     function renderAllAnswersAsChat(data) {
@@ -2650,8 +2870,16 @@
         }
 
         questionInput.value = '';
-        const response = await fetch('/api/run', { method: 'POST', body: formData });
-        const data = await response.json();
+        const response = await fetch('/api/run/stream', {
+          method: 'POST',
+          body: formData,
+          headers: { Accept: 'text/event-stream' },
+        });
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(_text(data && data.error) || `HTTP ${response.status}`);
+        }
+        const data = await consumeWorkflowStream(response, { userQ: userQuestion, displayQ: displayQuestion, hadAnnotations });
 
         renderWorkflow(data, { userQ: userQuestion, displayQ: displayQuestion, hadAnnotations });
         qaAnswer.innerHTML += renderAllAnswersAsChat(data);
@@ -2707,6 +2935,8 @@
       resultImage.style.transform = `scale(${currentZoom})`;
       annoCanvas.style.transform = `scale(${currentZoom})`;
     });
+
+    loadModelCatalog();
 
     document.getElementById('btnZoomOut').addEventListener('click', () => {
       currentZoom = Math.max(0.25, currentZoom - 0.25);
