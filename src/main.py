@@ -61,7 +61,8 @@ def run_main(
     executor_llm = make_llm(executor_config)
     answer_llm = make_llm(answer_config)
     tool_planner_llm = make_llm(tool_planner_config)
-    svg_update_mode = get_svg_update_mode()
+    svg_update_mode = get_svg_update_mode(inputs.get("svg_update_mode"))
+    svg_perception_mode = inputs.get("svg_perception_mode")
     structured_context = _normalize_structured_context(inputs.get("structured_update_context"))
     update_question, qa_question, split_info, split_data_change = _resolve_questions(inputs, splitter_llm)
     structured_context = _merge_structured_operation_target(
@@ -255,6 +256,7 @@ def run_main(
             update_spec=(last_state.perception if last_state else state.perception).get("update_spec", {}),
             step_logs=step_logs,
             llm=executor_llm,
+            svg_perception_mode=svg_perception_mode,
         )
         append_trace(
             state.trace,
@@ -462,6 +464,7 @@ def run_main(
             image_path=last_output_image,
             svg_path=final_step_svg_path or None,
             llm=tool_planner_llm,
+            svg_perception_mode=svg_perception_mode,
         )
         if force_tool_phase and isinstance(tool_phase, dict):
             tool_phase["force_run"] = True
@@ -2063,12 +2066,18 @@ def _validate_render_with_programmatic(
     update_spec: dict[str, Any],
     step_logs: list[dict[str, Any]],
     llm: Any,
+    svg_perception_mode: str | None = None,
 ) -> dict[str, Any]:
     basic_check = validate_render(output_image, chart_type, update_spec, llm=None)
     if not basic_check.get("ok"):
         return basic_check
 
-    prog = _programmatic_validate(chart_type=chart_type, step_logs=step_logs)
+    prog = _programmatic_validate(
+        chart_type=chart_type,
+        step_logs=step_logs,
+        llm=llm,
+        svg_perception_mode=svg_perception_mode,
+    )
     if prog is not None:
         if prog.get("ok"):
             return {
@@ -2087,7 +2096,12 @@ def _validate_render_with_programmatic(
     return validate_render(output_image, chart_type, update_spec, llm=llm)
 
 
-def _programmatic_validate(chart_type: str, step_logs: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _programmatic_validate(
+    chart_type: str,
+    step_logs: list[dict[str, Any]],
+    llm: Any,
+    svg_perception_mode: str | None = None,
+) -> dict[str, Any] | None:
     if chart_type != "area":
         return None
     change_step = None
@@ -2115,7 +2129,12 @@ def _programmatic_validate(chart_type: str, step_logs: list[dict[str, Any]]) -> 
         if axes is None:
             return {"ok": False, "confidence": 0.0, "issues": ["programmatic: axes_1 missing"]}
 
-        perceived = perceive_svg(svg_path, question=question, llm=None)
+        perceived = perceive_svg(
+            svg_path,
+            question=question,
+            llm=llm,
+            perception_mode=svg_perception_mode,
+        )
         mapping = perceived.get("mapping_info", {}) if isinstance(perceived, dict) else {}
         x_ticks = mapping.get("x_ticks", []) if isinstance(mapping, dict) else []
         y_ticks = mapping.get("y_ticks", []) if isinstance(mapping, dict) else []
@@ -2124,7 +2143,7 @@ def _programmatic_validate(chart_type: str, step_logs: list[dict[str, Any]]) -> 
 
         _, legend_items = area_ops._extract_legend_items(root, content)
         labels = [item["label"] for item in legend_items if item.get("label")]
-        parsed = area_ops._parse_year_value_update(question, labels, llm=None)
+        parsed = area_ops._parse_year_value_update(question, labels, llm=llm)
         if parsed is None:
             return {"ok": False, "confidence": 0.0, "issues": ["programmatic: cannot parse change request"]}
         label, year_value, expected_value, _ = parsed

@@ -134,7 +134,12 @@ def _parse_question(state: GraphState, llm: Any) -> None:
 def _perceive_image_svg(state: GraphState, llm: Any) -> None:
     svg_path = state.inputs.get("svg_path")
     question = state.inputs.get("question", "")
-    perception = perceive_svg(svg_path, question=question, llm=llm)
+    perception = perceive_svg(
+        svg_path,
+        question=question,
+        llm=llm,
+        perception_mode=state.inputs.get("svg_perception_mode"),
+    )
     state.perception.update(perception)
     state.perception["svg_perceived"] = True
     append_trace(

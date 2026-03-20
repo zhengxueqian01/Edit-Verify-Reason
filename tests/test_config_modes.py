@@ -21,6 +21,14 @@ class ConfigModesTests(unittest.TestCase):
         with patch.dict(os.environ, {"SVG_PERCEPTION_MODE": "llm"}, clear=False):
             self.assertEqual(get_svg_perception_mode(), "llm_summary")
 
+    def test_svg_update_mode_prefers_explicit_override(self) -> None:
+        with patch.dict(os.environ, {"SVG_UPDATE_MODE": "rules"}, clear=False):
+            self.assertEqual(get_svg_update_mode("llm"), "llm_intent")
+
+    def test_svg_perception_mode_prefers_explicit_override(self) -> None:
+        with patch.dict(os.environ, {"SVG_PERCEPTION_MODE": "rules"}, clear=False):
+            self.assertEqual(get_svg_perception_mode("llm"), "llm_summary")
+
 
 if __name__ == "__main__":
     unittest.main()

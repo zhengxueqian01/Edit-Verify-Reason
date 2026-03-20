@@ -14,7 +14,13 @@ SVG_NS = "http://www.w3.org/2000/svg"
 XLINK_NS = "http://www.w3.org/1999/xlink"
 
 
-def perceive_svg(svg_path: str | None, question: str | None = None, llm: Any | None = None) -> dict[str, Any]:
+def perceive_svg(
+    svg_path: str | None,
+    question: str | None = None,
+    llm: Any | None = None,
+    *,
+    perception_mode: str | None = None,
+) -> dict[str, Any]:
     issues: list[str] = []
     suggested_next_actions: list[str] = []
 
@@ -114,7 +120,7 @@ def perceive_svg(svg_path: str | None, question: str | None = None, llm: Any | N
         "area_fills": area_fills,
     }
 
-    perception_mode = get_svg_perception_mode()
+    perception_mode = get_svg_perception_mode(perception_mode)
     llm_meta = None
     if llm is not None:
         if perception_mode == "llm_summary":

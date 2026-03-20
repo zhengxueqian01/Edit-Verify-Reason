@@ -61,3 +61,21 @@ def test_perceive_svg_llm_summary_mode_uses_compact_svg_summary(tmp_path, monkey
     assert result["mapping_info"]["llm_meta"]["mode"] == "llm_summary"
     assert "SVG Summary:" in llm.prompts[0]
     assert "chart_type_guess" in llm.prompts[0]
+
+
+def test_perceive_svg_explicit_mode_override_uses_llm_summary(tmp_path, monkeypatch) -> None:
+    svg_path = tmp_path / "sample.svg"
+    svg_path.write_text(SVG_SAMPLE, encoding="utf-8")
+    monkeypatch.setenv("SVG_PERCEPTION_MODE", "rules")
+    llm = FakeLLM('{"chart_type":"line"}')
+
+    result = perceive_svg(
+        str(svg_path),
+        question="How many intersections?",
+        llm=llm,
+        perception_mode="llm",
+    )
+
+    assert result["perception_mode"] == "llm_summary"
+    assert result["mapping_info"]["llm_meta"]["mode"] == "llm_summary"
+    assert "SVG Summary:" in llm.prompts[0]

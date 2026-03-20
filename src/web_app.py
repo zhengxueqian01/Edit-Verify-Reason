@@ -248,6 +248,7 @@ def _prepare_run_request(form: cgi.FieldStorage) -> dict[str, Any]:
 
     return {
         "inputs": {
+            "web_mode": True,
             "question": update_question,
             "update_question": update_question,
             "qa_question": qa_question,
@@ -255,6 +256,8 @@ def _prepare_run_request(form: cgi.FieldStorage) -> dict[str, Any]:
             "text_spec": None,
             "answer_image_path": enhanced_image_path,
             "max_render_retries": max_render_retries,
+            "svg_perception_mode": "llm",
+            "svg_update_mode": "llm",
             "model_overrides": model_overrides,
         },
         "enhanced_image_path": enhanced_image_path,

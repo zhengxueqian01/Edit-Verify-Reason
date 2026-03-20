@@ -100,6 +100,7 @@ def run_visual_tool_phase(
     image_path: str | None,
     llm: Any,
     svg_path: str | None = None,
+    svg_perception_mode: str | None = None,
     max_tool_calls: int = 6,
 ) -> dict[str, Any]:
     svg = Path(svg_path or "").expanduser() if svg_path else None
@@ -115,7 +116,12 @@ def run_visual_tool_phase(
         }
 
     width, height = _svg_canvas_size(svg)
-    perception = perceive_svg(str(svg), question=question, llm=None)
+    perception = perceive_svg(
+        str(svg),
+        question=question,
+        llm=llm,
+        perception_mode=svg_perception_mode,
+    )
     scatter_cluster_context = _build_scatter_cluster_context(perception, question)
     plan = _plan_tool_calls(
         question=question,

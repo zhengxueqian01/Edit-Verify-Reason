@@ -190,19 +190,33 @@ def get_perception_max_retries() -> int:
     return _get_env_int("PERCEPTION_MAX_RETRIES", 2)
 
 
-def get_svg_perception_mode() -> str:
-    mode = str(_get_env("SVG_PERCEPTION_MODE", "rules") or "rules").strip().lower()
-    if mode == "llm":
+def _normalize_svg_perception_mode(mode: str | None) -> str:
+    normalized = str(mode or "rules").strip().lower()
+    if normalized == "llm":
         return "llm_summary"
-    if mode in {"rules", "llm_summary"}:
-        return mode
+    if normalized in {"rules", "llm_summary"}:
+        return normalized
     return "rules"
 
 
-def get_svg_update_mode() -> str:
-    mode = str(_get_env("SVG_UPDATE_MODE", "rules") or "rules").strip().lower()
-    if mode == "llm":
+def _normalize_svg_update_mode(mode: str | None) -> str:
+    normalized = str(mode or "rules").strip().lower()
+    if normalized == "llm":
         return "llm_intent"
-    if mode in {"rules", "llm_intent"}:
-        return mode
+    if normalized in {"rules", "llm_intent"}:
+        return normalized
     return "rules"
+
+
+def get_svg_perception_mode(mode: str | None = None) -> str:
+    if mode is not None:
+        return _normalize_svg_perception_mode(mode)
+    mode = _get_env("SVG_PERCEPTION_MODE", "rules")
+    return _normalize_svg_perception_mode(mode)
+
+
+def get_svg_update_mode(mode: str | None = None) -> str:
+    if mode is not None:
+        return _normalize_svg_update_mode(mode)
+    mode = _get_env("SVG_UPDATE_MODE", "rules")
+    return _normalize_svg_update_mode(mode)
