@@ -1650,7 +1650,6 @@
       if (!summary || typeof summary !== 'object') return 'N/A';
       const pairs = [
         ['pts', summary.num_points],
-        ['bars', summary.num_bars],
         ['areas', summary.num_areas],
         ['lines', summary.num_lines],
       ].filter(([, value]) => value !== undefined && value !== null);

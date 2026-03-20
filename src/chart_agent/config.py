@@ -188,3 +188,21 @@ def get_web_task_model_defaults() -> dict[str, dict[str, str | None]]:
 
 def get_perception_max_retries() -> int:
     return _get_env_int("PERCEPTION_MAX_RETRIES", 2)
+
+
+def get_svg_perception_mode() -> str:
+    mode = str(_get_env("SVG_PERCEPTION_MODE", "rules") or "rules").strip().lower()
+    if mode == "llm":
+        return "llm_summary"
+    if mode in {"rules", "llm_summary"}:
+        return mode
+    return "rules"
+
+
+def get_svg_update_mode() -> str:
+    mode = str(_get_env("SVG_UPDATE_MODE", "rules") or "rules").strip().lower()
+    if mode == "llm":
+        return "llm_intent"
+    if mode in {"rules", "llm_intent"}:
+        return mode
+    return "rules"

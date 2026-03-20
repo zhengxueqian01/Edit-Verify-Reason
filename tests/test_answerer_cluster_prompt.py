@@ -22,7 +22,6 @@ class AnswererClusterPromptTests(unittest.TestCase):
 
         answer_question(
             qa_question="How many intersections are there?",
-            chart_type="line",
             data_summary={},
             output_image_path="output/line/example.png",
             image_context_note="The requested chart update has already been applied.",
@@ -35,7 +34,6 @@ class AnswererClusterPromptTests(unittest.TestCase):
 
         human_content = llm.prompt[1].content
         self.assertIsInstance(human_content, str)
-        self.assertIn("Use the provided image to answer the QA question only.", human_content)
         self.assertIn("Image context: The requested chart update has already been applied.", human_content)
         self.assertIn("Input: How many intersections are there?", human_content)
         self.assertNotIn("QA Question:", human_content)

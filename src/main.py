@@ -13,7 +13,7 @@ PROJECT_SRC = os.path.abspath(os.path.dirname(__file__))
 if PROJECT_SRC not in sys.path:
     sys.path.insert(0, PROJECT_SRC)
 
-from chart_agent.config import resolve_task_model_config
+from chart_agent.config import get_svg_update_mode, resolve_task_model_config
 from chart_agent.core.perception_graph import run_perception
 from chart_agent.core.trace import append_trace
 from chart_agent.core.answerer import answer_question
@@ -61,8 +61,13 @@ def run_main(
     executor_llm = make_llm(executor_config)
     answer_llm = make_llm(answer_config)
     tool_planner_llm = make_llm(tool_planner_config)
+    svg_update_mode = get_svg_update_mode()
     structured_context = _normalize_structured_context(inputs.get("structured_update_context"))
     update_question, qa_question, split_info, split_data_change = _resolve_questions(inputs, splitter_llm)
+    structured_context = _merge_structured_operation_target(
+        structured_context,
+        split_info.get("operation_target"),
+    )
     structured_context = _merge_structured_data_change(structured_context, split_data_change)
     _emit_event(
         event_callback,
@@ -77,25 +82,14 @@ def run_main(
             }
         },
     )
-    update_question = _enrich_update_question(
-        update_question=update_question,
-        structured_context=structured_context,
-    )
-    original_combined_question = _build_combined_qa_question(
-        update_question=update_question,
-        qa_question=qa_question,
-    )
     original_image_path = _resolve_original_image_path(inputs)
-    original_chart_type = str(inputs.get("chart_type_hint") or "unknown").strip().lower() or "unknown"
     answer_original_input = {
         "question": qa_question,
-        "chart_type": original_chart_type,
         "output_image_path": original_image_path,
         "data_summary": {},
     }
     answer_original = answer_question(
         qa_question=qa_question,
-        chart_type=original_chart_type,
         data_summary={},
         output_image_path=original_image_path,
         image_context_note="This is the original chart image before any requested update is applied.",
@@ -119,14 +113,9 @@ def run_main(
     for attempt in range(1, retries + 2):
         perception_inputs = dict(inputs)
         perception_inputs["question"] = planned_question
-        if inputs.get("chart_type_hint"):
-            perception_inputs["chart_type_hint"] = inputs.get("chart_type_hint")
         state = run_perception(perception_inputs)
         last_state = state
-        chart_type = _resolve_supported_chart_type(
-            state.perception,
-            str(inputs.get("chart_type_hint") or ""),
-        )
+        chart_type = _resolve_supported_chart_type(state.perception)
         state.perception["chart_type"] = chart_type
         mapping_info = state.perception.get("mapping_info", {})
         if chart_type not in SUPPORTED_SVG_CHART_TYPES:
@@ -154,6 +143,16 @@ def run_main(
         )
         normalized_question = str(operation_plan.get("normalized_question") or planned_question)
         planned_question = _choose_planned_question(planned_question, normalized_question)
+        operation_plan = _maybe_apply_llm_intent_steps(
+            operation_plan=operation_plan,
+            operation_text=planned_question,
+            chart_type=chart_type,
+            perception=state.perception,
+            structured_context=structured_context,
+            llm=planner_llm,
+            update_mode=svg_update_mode,
+        )
+        last_operation_plan = operation_plan
         plan_steps = _operation_steps_from_plan(operation_plan, planned_question, structured_context)
         has_executable_plan = bool(plan_steps)
         if not operation_plan.get("llm_success") and not has_executable_plan:
@@ -321,6 +320,7 @@ def run_main(
         "resolved_data_change": structured_context.get("data_change", {}),
         "question_split": split_info,
         "perception_steps": last_perception_steps,
+        "svg_update_mode": svg_update_mode,
         "answer_original_input": answer_original_input,
         "answer_original": answer_original,
         "model_overrides": model_overrides,
@@ -396,12 +396,11 @@ def run_main(
         "update_spec": last_state.perception.get("update_spec", {}),
         "cluster_result": cluster_result,
         "cluster_params": cluster_params,
-        "mapping_info_summary": {
-            "num_points": last_state.perception.get("primitives_summary", {}).get("num_points"),
-            "num_bars": last_state.perception.get("primitives_summary", {}).get("num_bars"),
-            "num_areas": last_state.perception.get("primitives_summary", {}).get("num_areas"),
-            "num_lines": last_state.perception.get("primitives_summary", {}).get("num_lines"),
-        },
+            "mapping_info_summary": {
+                "num_points": last_state.perception.get("primitives_summary", {}).get("num_points"),
+                "num_areas": last_state.perception.get("primitives_summary", {}).get("num_areas"),
+                "num_lines": last_state.perception.get("primitives_summary", {}).get("num_lines"),
+            },
         "operation_plan": last_operation_plan,
         "perception_steps": last_perception_steps,
         "latest_step_logs": (attempt_logs[-1].get("step_logs", []) if attempt_logs else []),
@@ -417,7 +416,6 @@ def run_main(
 
     initial_answer = answer_question(
         qa_question=qa_question,
-        chart_type=chart_type,
         data_summary=answer_data_summary,
         output_image_path=final_eval_image,
         image_context_note=(
@@ -481,7 +479,6 @@ def run_main(
     _apply_tool_augmented_answer(
         output=output,
         qa_question=qa_question,
-        chart_type=chart_type,
         answer_data_summary=answer_data_summary,
         tool_phase=tool_phase,
         answer_llm=answer_llm,
@@ -518,12 +515,15 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
     raw_update = str(inputs.get("update_question") or "").strip()
     raw_qa = str(inputs.get("qa_question") or "").strip()
     auto_split = bool(inputs.get("auto_split_question", True))
+    inline_split_source, inline_structured_context, inline_structured_suffix = _extract_embedded_structured_context(raw_question)
+    inline_structured_context = _normalize_structured_context(inline_structured_context)
 
     split_info: dict[str, Any] = {
         "used": False,
         "reason": "not_needed",
         "source_question": raw_question,
         "operation_text": "",
+        "operation_target": {},
         "data_change": {},
     }
 
@@ -538,7 +538,7 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
         return update_question, qa_question, split_info, {}
 
     # Prefer model-based split whenever a full question is available.
-    split_source = raw_question or f"{update_question}. {qa_question}".strip()
+    split_source = inline_split_source or raw_question or f"{update_question}. {qa_question}".strip()
     if not split_source:
         split_info["reason"] = "empty_split_source"
         return update_question, qa_question, split_info, {}
@@ -546,26 +546,53 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
     split_payload = _llm_split_request(split_source, splitter_llm)
     cand_update = str(split_payload.get("operation_text") or split_payload.get("update_question") or "").strip()
     cand_qa = str(split_payload.get("qa_question") or "").strip()
+    cand_operation_target = split_payload.get("operation_target")
+    if not isinstance(cand_operation_target, dict):
+        cand_operation_target = {}
     cand_data_change = _normalize_data_change(split_payload.get("data_change"))
     llm_success = bool(split_payload.get("llm_success"))
     if not (cand_update and cand_qa):
+        rule_payload = _rule_split_request(split_source)
+        cand_update = cand_update or str(rule_payload.get("operation_text") or "").strip()
+        cand_qa = cand_qa or str(rule_payload.get("qa_question") or "").strip()
+        if not cand_operation_target:
+            fallback_operation_target = rule_payload.get("operation_target")
+            if isinstance(fallback_operation_target, dict):
+                cand_operation_target = fallback_operation_target
+        if not cand_data_change:
+            cand_data_change = _normalize_data_change(rule_payload.get("data_change"))
         heuristic_update, heuristic_qa = _heuristic_split_update_and_qa(split_source)
         cand_update = cand_update or heuristic_update
         cand_qa = cand_qa or heuristic_qa
+    cand_operation_target = _merge_dict_like(inline_structured_context.get("operation_target"), cand_operation_target)
+    cand_data_change = _merge_dict_like(inline_structured_context.get("data_change"), cand_data_change)
+    structured_context_note = ""
+    if inline_structured_suffix:
+        structured_context_note = _structured_context_suffix_text(
+            operation_target=cand_operation_target,
+            data_change=cand_data_change,
+            raw_suffix=inline_structured_suffix,
+        )
+    elif llm_success and (cand_operation_target or cand_data_change):
+        structured_context_note = _structured_context_suffix_text(
+            operation_target=cand_operation_target,
+            data_change=cand_data_change,
+            raw_suffix="",
+        )
     split_info = {
-        "used": llm_success and bool(cand_update or cand_qa),
-        "reason": "llm_split",
+        "used": bool(cand_update or cand_qa),
+        "reason": "llm_split" if llm_success else "llm_split_failed_fallback",
         "source_question": split_source,
         "llm_success": llm_success,
-        "operation_text": cand_update or update_question,
+        "operation_text": _compose_operation_text(cand_update or update_question, structured_context_note),
+        "operation_target": cand_operation_target,
         "data_change": cand_data_change,
     }
     if cand_update:
         update_question = cand_update
     if cand_qa:
         qa_question = cand_qa
-    if not llm_success:
-        split_info["reason"] = "llm_split_failed_fallback"
+    update_question = _compose_operation_text(update_question, structured_context_note)
     return update_question, qa_question, split_info, cand_data_change
 
 
@@ -579,6 +606,19 @@ def _normalize_model_overrides(raw: Any) -> dict[str, str]:
         if task and model_name:
             normalized[task] = model_name
     return normalized
+
+
+def _merge_dict_like(base_value: Any, extra_value: Any) -> dict[str, Any]:
+    base = dict(base_value) if isinstance(base_value, dict) else {}
+    if isinstance(extra_value, dict):
+        for key, value in extra_value.items():
+            if key in base and isinstance(base.get(key), dict) and isinstance(value, dict):
+                base[key] = _merge_dict_like(base.get(key), value)
+                continue
+            if key in base and isinstance(base.get(key), dict) and value == {}:
+                continue
+            base[key] = value
+    return base
 
 
 def _should_force_visual_tool_phase(question: str, chart_type: str) -> bool:
@@ -597,11 +637,9 @@ def _heuristic_split_update_and_qa(question: str) -> tuple[str, str]:
     text = (question or "").strip()
     if not text:
         return "", ""
-    match = re.match(r"^(?:after|once|when)\s+(.+?),\s*(.+)$", text, flags=re.IGNORECASE)
-    if not match:
+    raw_update, qa_question = _split_preface_and_question(text)
+    if not raw_update or not qa_question:
         return "", ""
-    raw_update = match.group(1).strip()
-    qa_question = match.group(2).strip()
     update_question = _normalize_gerund_clause(raw_update)
     return update_question, qa_question
 
@@ -622,10 +660,301 @@ def _merge_structured_data_change(
 ) -> dict[str, Any]:
     base = dict(structured_context or {})
     current = base.get("data_change")
-    merged = dict(current) if isinstance(current, dict) else {}
-    merged.update(_normalize_data_change(split_data_change))
+    merged = _merge_dict_like(current, _normalize_data_change(split_data_change))
     base["data_change"] = merged
     return base
+
+
+def _merge_structured_operation_target(
+    structured_context: dict[str, Any],
+    split_operation_target: Any,
+) -> dict[str, Any]:
+    base = dict(structured_context or {})
+    current = base.get("operation_target")
+    merged = dict(current) if isinstance(current, dict) else {}
+    if isinstance(split_operation_target, dict):
+        for key, value in split_operation_target.items():
+            if value is None:
+                continue
+            merged[key] = value
+    base["operation_target"] = merged
+    return base
+
+
+def _extract_embedded_structured_context(text: str) -> tuple[str, dict[str, Any], str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return "", {}, ""
+    marker_positions = [
+        idx
+        for idx in (
+            raw.find('"operation_target"'),
+            raw.find('"data_change"'),
+        )
+        if idx >= 0
+    ]
+    if not marker_positions:
+        return raw, {}, ""
+    start = min(marker_positions)
+    prefix = raw[:start].rstrip(" ,")
+    suffix = raw[start:].strip().rstrip(",")
+    payload = _parse_embedded_structured_context(suffix)
+    return prefix, payload, suffix
+
+
+def _parse_embedded_structured_context(suffix: str) -> dict[str, Any]:
+    text = str(suffix or "").strip()
+    if not text:
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("operation_target", "data_change"):
+        pattern = f'"{key}"'
+        idx = text.find(pattern)
+        if idx < 0:
+            continue
+        brace_start = text.find("{", idx)
+        if brace_start < 0:
+            continue
+        brace_end = _find_matching_brace(text, brace_start)
+        if brace_end < 0:
+            continue
+        block = text[brace_start : brace_end + 1]
+        try:
+            parsed = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            out[key] = parsed
+    return out
+
+
+def _find_matching_brace(text: str, start: int) -> int:
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return idx
+    return -1
+
+
+def _structured_context_suffix_text(
+    *,
+    operation_target: dict[str, Any],
+    data_change: dict[str, Any],
+    raw_suffix: str,
+) -> str:
+    if raw_suffix:
+        return raw_suffix
+    parts: list[str] = []
+    if operation_target:
+        parts.append(f'operation_target: {json.dumps(operation_target, ensure_ascii=False)}')
+    if data_change:
+        parts.append(f'data_change: {json.dumps(data_change, ensure_ascii=False)}')
+    return ", ".join(parts)
+
+
+def _compose_operation_text(operation_text: str, suffix_text: str) -> str:
+    operation = str(operation_text or "").strip()
+    suffix = str(suffix_text or "").strip()
+    if not suffix:
+        return operation
+    if not operation:
+        return suffix
+    joiner = " " if operation.endswith((".", ")", "]", "}")) else ". "
+    return f"{operation}{joiner}{suffix}"
+
+
+def _rule_split_request(question: str) -> dict[str, Any]:
+    text = str(question or "").strip()
+    if not text:
+        return {"operation_text": "", "qa_question": "", "operation_target": {}, "data_change": {}}
+
+    prefix, qa_question = _split_preface_and_question(text)
+    if not prefix or not qa_question:
+        return {"operation_text": "", "qa_question": "", "operation_target": {}, "data_change": {}}
+
+    operations = _extract_preface_operations(prefix)
+    if not operations:
+        return {"operation_text": "", "qa_question": "", "operation_target": {}, "data_change": {}}
+
+    operation_lines: list[str] = []
+    operation_target: dict[str, Any] = {}
+    data_change: dict[str, Any] = {}
+
+    for item in operations:
+        op = item.get("operation")
+        target = item.get("operation_target")
+        change = item.get("data_change")
+        sentence = str(item.get("operation_text") or "").strip()
+        if sentence:
+            operation_lines.append(sentence)
+        if isinstance(target, dict):
+            operation_target.update(target)
+        if op == "add" and isinstance(change, dict):
+            data_change["add"] = change
+        elif op == "delete" and isinstance(change, dict):
+            data_change["del"] = change
+        elif op == "change" and isinstance(change, dict):
+            data_change["change"] = change
+
+    return {
+        "operation_text": " ".join(operation_lines).strip(),
+        "qa_question": qa_question,
+        "operation_target": operation_target,
+        "data_change": data_change,
+    }
+
+
+def _split_preface_and_question(text: str) -> tuple[str, str]:
+    stripped = text.strip()
+    lowered = stripped.lower()
+    if lowered.startswith(("after ", "once ", "when ")):
+        boundary_match = re.search(
+            r"[,，]\s*[\"'“”]?\s*(in which|which|how|what|when|where|why|who|is|are|does|do|did|was|were|can|could|should|would)\b",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if boundary_match:
+            boundary = boundary_match.start()
+            prefix = stripped[:boundary].strip()
+            question = stripped[boundary + 1 :].strip()
+            prefix = re.sub(r"^(?:after|once|when)\s+", "", prefix, flags=re.IGNORECASE).strip()
+            prefix = prefix.rstrip(' \t\n\r"\'“”')
+            question = question.lstrip(' \t\n\r"\'“”')
+            return prefix, question
+    return "", ""
+
+
+def _extract_preface_operations(prefix: str) -> list[dict[str, Any]]:
+    text = str(prefix or "").strip().rstrip(".")
+    if not text:
+        return []
+    clauses = re.split(r"\s+(?:and|then)\s+", text, flags=re.IGNORECASE)
+    operations: list[dict[str, Any]] = []
+    for clause in clauses:
+        parsed = _parse_operation_clause(clause)
+        if parsed:
+            operations.append(parsed)
+    return operations
+
+
+def _parse_operation_clause(clause: str) -> dict[str, Any] | None:
+    text = str(clause or "").strip().rstrip(".")
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered.startswith("adding ") or lowered.startswith("add "):
+        return _parse_add_clause(text)
+    if lowered.startswith("deleting ") or lowered.startswith("delete ") or lowered.startswith("removing ") or lowered.startswith("remove "):
+        return _parse_delete_clause(text)
+    if lowered.startswith("changing ") or lowered.startswith("change ") or lowered.startswith("updating ") or lowered.startswith("update "):
+        return _parse_change_clause(text)
+    return None
+
+
+def _parse_add_clause(text: str) -> dict[str, Any] | None:
+    label = _extract_category_label(text)
+    if not label:
+        return None
+    years, values = _extract_years_and_values(text)
+    add_change: dict[str, Any] = {}
+    if years and values:
+        add_change = {"mode": "full_series", "years": years, "values": values}
+    return {
+        "operation": "add",
+        "operation_text": _normalize_gerund_clause(text),
+        "operation_target": {"add_category": label},
+        "data_change": add_change,
+    }
+
+
+def _parse_delete_clause(text: str) -> dict[str, Any] | None:
+    label = _extract_category_label(text)
+    if not label:
+        return None
+    return {
+        "operation": "delete",
+        "operation_text": _normalize_gerund_clause(text),
+        "operation_target": {"del_category": label},
+        "data_change": {"category": label},
+    }
+
+
+def _parse_change_clause(text: str) -> dict[str, Any] | None:
+    return {
+        "operation": "change",
+        "operation_text": _normalize_gerund_clause(text),
+        "operation_target": {},
+        "data_change": {},
+    }
+
+
+def _extract_category_label(text: str) -> str:
+    quoted = re.findall(r'["“”]([^"“”]+)["“”]', text)
+    if quoted:
+        return quoted[0].strip()
+    open_quoted = re.search(r'[“"]([^"“”]+)$', text)
+    if open_quoted:
+        return open_quoted.group(1).strip()
+    match = re.search(
+        r"(?:category|series)\s+([A-Za-z0-9][A-Za-z0-9&'()\/,\- ]*[A-Za-z0-9)])$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip()
+    match = re.search(
+        r"(?:category|series)\s+([A-Za-z0-9][A-Za-z0-9&'()\/,\- ]*[A-Za-z0-9])",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def _extract_years_and_values(text: str) -> tuple[list[str], list[float]]:
+    year_match = re.search(r"years?\s+(\d{4})\s*[–-]\s*(\d{4})", text, flags=re.IGNORECASE)
+    years: list[str] = []
+    if year_match:
+        start = int(year_match.group(1))
+        end = int(year_match.group(2))
+        if start <= end and end - start <= 50:
+            years = [str(year) for year in range(start, end + 1)]
+
+    values: list[float] = []
+    values_match = re.search(r"\(([^()]*)\)", text)
+    if values_match:
+        values_text = values_match.group(1).strip()
+        raw_values = re.split(r"\s*;\s*", values_text) if ";" in values_text else re.split(r"\s*,\s*", values_text)
+        for raw in raw_values:
+            cleaned = raw.replace(",", "").strip()
+            if not cleaned:
+                continue
+            try:
+                values.append(float(cleaned))
+            except ValueError:
+                return years, []
+    if years and values and len(years) != len(values):
+        return [], []
+    return years, values
 
 
 def _normalize_gerund_clause(text: str) -> str:
@@ -652,68 +981,23 @@ def _normalize_gerund_clause(text: str) -> str:
     return cleaned if cleaned.endswith("?") else f"{cleaned}."
 
 
-def _enrich_update_question(
-    *,
-    update_question: str,
-    structured_context: Any,
-) -> str:
-    parts = [f"Operation: {(update_question or '').strip()}"]
-    operation_target_text, data_change_text = _format_structured_update_context(structured_context)
-    if operation_target_text:
-        parts.append(f"Operation target: {operation_target_text}")
-    if data_change_text:
-        parts.append(f"Data change: {data_change_text}")
-    return "\n".join(part for part in parts if part.strip())
-
-
-def _build_combined_qa_question(*, update_question: str, qa_question: str) -> str:
-    update_text = (update_question or "").strip()
-    qa_text = (qa_question or "").strip()
-    if update_text and qa_text:
-        return f"{update_text}. {qa_text}".strip()
-    return update_text or qa_text
-
-
 def _normalize_structured_context(structured_context: Any) -> dict[str, Any]:
     if not isinstance(structured_context, dict):
         return {}
     out: dict[str, Any] = {}
     chart_type = str(structured_context.get("chart_type") or "").strip().lower()
-    operation = str(structured_context.get("operation") or "").strip().lower()
     task = str(structured_context.get("task") or "").strip().lower()
     operation_target = structured_context.get("operation_target")
     data_change = structured_context.get("data_change")
     cluster_params = structured_context.get("cluster_params")
     if chart_type:
         out["chart_type"] = chart_type
-    if operation:
-        out["operation"] = operation
     if task:
         out["task"] = task
     out["operation_target"] = operation_target if isinstance(operation_target, dict) else {}
     out["data_change"] = data_change if isinstance(data_change, dict) else {}
     out["cluster_params"] = cluster_params if isinstance(cluster_params, dict) else {}
     return out
-
-
-def _format_structured_update_context(structured_context: Any) -> tuple[str, str]:
-    if not isinstance(structured_context, dict):
-        return "", ""
-    operation_target = structured_context.get("operation_target")
-    data_change = structured_context.get("data_change")
-    operation_target_text = ""
-    data_change_text = ""
-    if operation_target:
-        try:
-            operation_target_text = json.dumps(operation_target, ensure_ascii=False)
-        except TypeError:
-            operation_target_text = str(operation_target)
-    if data_change:
-        try:
-            data_change_text = json.dumps(data_change, ensure_ascii=False)
-        except TypeError:
-            data_change_text = str(data_change)
-    return operation_target_text, data_change_text
 
 
 def _resolve_original_image_path(inputs: dict[str, Any]) -> str | None:
@@ -900,12 +1184,116 @@ def _heuristic_plan_update(question: str) -> dict[str, Any]:
     }
 
 
+def _maybe_apply_llm_intent_steps(
+    *,
+    operation_plan: dict[str, Any],
+    operation_text: str,
+    chart_type: str,
+    perception: dict[str, Any],
+    structured_context: dict[str, Any],
+    llm: Any,
+    update_mode: str,
+) -> dict[str, Any]:
+    if update_mode != "llm_intent":
+        return operation_plan
+    intent_steps = _llm_plan_svg_intent(
+        operation_text=operation_text,
+        chart_type=chart_type,
+        perception=perception,
+        structured_context=structured_context,
+        llm=llm,
+    )
+    if not intent_steps:
+        return operation_plan
+    merged = dict(operation_plan)
+    merged["steps"] = intent_steps
+    merged["llm_intent_success"] = True
+    return merged
+
+
+def _llm_plan_svg_intent(
+    *,
+    operation_text: str,
+    chart_type: str,
+    perception: dict[str, Any],
+    structured_context: dict[str, Any],
+    llm: Any,
+) -> list[dict[str, Any]]:
+    prompt = (
+        "You are planning SVG edit intent for a chart update.\n"
+        "Return JSON only with key: steps.\n"
+        "- steps: array of step objects in execution order.\n"
+        "- each step may contain: operation, question_hint, operation_target, data_change, new_points.\n"
+        "- operation must be one of add|delete|change.\n"
+        "- Decide the concrete edit target from the operation text and SVG summary.\n"
+        "- Keep structured payloads in operation_target/data_change instead of prose when possible.\n"
+        "- Do not output explanations.\n"
+        f"Chart type: {chart_type}\n"
+        f"Operation text: {operation_text}\n"
+        f"Structured context: {json.dumps(_intent_structured_context_summary(structured_context), ensure_ascii=False)}\n"
+        f"SVG summary: {json.dumps(_intent_perception_summary(perception), ensure_ascii=False)}"
+    )
+    try:
+        response = llm.invoke(prompt)
+    except Exception:
+        return []
+    content = getattr(response, "content", "")
+    payload = _safe_json_loads(content)
+    if not payload:
+        return []
+    return _coerce_steps(payload.get("steps", []))
+
+
+def _intent_structured_context_summary(structured_context: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    if not isinstance(structured_context, dict):
+        return summary
+    operation_target = structured_context.get("operation_target")
+    data_change = structured_context.get("data_change")
+    if isinstance(operation_target, dict) and operation_target:
+        summary["operation_target"] = operation_target
+    if isinstance(data_change, dict) and data_change:
+        summary["data_change"] = data_change
+    if str(structured_context.get("task") or "").strip():
+        summary["task"] = structured_context.get("task")
+    return summary
+
+
+def _intent_perception_summary(perception: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(perception, dict):
+        return {}
+    mapping_info = perception.get("mapping_info")
+    if not isinstance(mapping_info, dict):
+        mapping_info = {}
+    return {
+        "chart_type": perception.get("chart_type"),
+        "primitives_summary": perception.get("primitives_summary", {}),
+        "axes_bounds": mapping_info.get("axes_bounds"),
+        "x_ticks_count": len(mapping_info.get("x_ticks", [])) if isinstance(mapping_info.get("x_ticks"), list) else 0,
+        "y_ticks_count": len(mapping_info.get("y_ticks", [])) if isinstance(mapping_info.get("y_ticks"), list) else 0,
+        "x_labels_sample": _compact_value_list(mapping_info.get("x_labels"), limit=8),
+        "point_color_sample": _compact_value_list(mapping_info.get("existing_point_colors"), limit=8),
+        "area_fill_sample": _compact_value_list(mapping_info.get("area_fills"), limit=8),
+    }
+
+
+def _compact_value_list(values: Any, *, limit: int) -> list[Any]:
+    if not isinstance(values, list):
+        return []
+    if len(values) <= limit:
+        return values
+    head = max(1, limit // 2)
+    tail = max(1, limit - head)
+    return values[:head] + ["..."] + values[-tail:]
+
+
 def _llm_split_request(question: str, llm: Any) -> dict[str, Any]:
     prompt = (
         "You split chart requests into operation text, QA question, and structured data change.\n"
         "Return JSON only with keys:\n"
         "- operation_text: the chart edit command only (imperative, explicit, step-by-step)\n"
         "- qa_question: only the pure QA query to answer after chart is updated\n"
+        "- operation_target: structured JSON object for concrete operation targets such as add_category, del_category, category_name, or category_names; use {} if unavailable\n"
         "- data_change: structured JSON object for concrete payloads such as points, values, years, or per-step changes; use {} if unavailable\n"
         "- llm_success: true\n"
         "Rules:\n"
@@ -915,30 +1303,44 @@ def _llm_split_request(question: str, llm: Any) -> dict[str, Any]:
         "- If there are multiple edit actions, rewrite operation_text as an explicit ordered sequence.\n"
         "- Use concise imperative verbs such as 'Delete', 'Add', 'Change', 'Apply'. Never use gerunds like 'adding', 'deleting', 'applying'.\n"
         "- Preferred format for multiple actions: '1. Delete ...; 2. Apply ...; 3. Add ...'.\n"
-        "- Keep all concrete operation targets in operation_text.\n"
-        "- Move numeric values, points, and concrete revision payloads into data_change whenever possible.\n"
+        "- Extract operation targets into operation_target whenever possible instead of leaving them only in prose.\n"
+        "- Move numeric values, points, year-value series, and concrete revision payloads into data_change whenever possible.\n"
         "- If one part is missing, return empty string for that key.\n"
         "- Do not add explanations.\n"
         "Example:\n"
-        "{\"operation_text\":\"1. Delete the category CrimsonLink; 2. Apply the listed value revisions.\",\"qa_question\":\"How many times do the lines for Starburst and AetherNet intersect?\",\"data_change\":{\"change\":{\"changes\":[{\"category_name\":\"Starburst\",\"years\":[2020],\"values\":[12]}]}},\"llm_success\":true}\n"
+        "{\"operation_text\":\"1. Delete the category CrimsonLink; 2. Apply the listed value revisions.\",\"qa_question\":\"How many times do the lines for Starburst and AetherNet intersect?\",\"operation_target\":{\"del_category\":\"CrimsonLink\"},\"data_change\":{\"change\":{\"changes\":[{\"category_name\":\"Starburst\",\"years\":[2020],\"values\":[12]}]}},\"llm_success\":true}\n"
         "User input:\n"
         f"{question}"
     )
     try:
         response = llm.invoke(prompt)
     except Exception:
-        return {"operation_text": "", "qa_question": "", "data_change": {}, "llm_success": False}
+        return {"operation_text": "", "qa_question": "", "operation_target": {}, "data_change": {}, "llm_success": False}
     content = getattr(response, "content", "")
     payload = _safe_json_loads(content)
     if not payload:
-        return {"operation_text": "", "qa_question": "", "data_change": {}, "llm_success": False}
+        return {"operation_text": "", "qa_question": "", "operation_target": {}, "data_change": {}, "llm_success": False}
+    llm_success = bool(payload.get("llm_success"))
+    if not llm_success:
+        return {
+            "operation_text": "",
+            "qa_question": "",
+            "operation_target": {},
+            "data_change": {},
+            "llm_success": False,
+            "llm_raw": content,
+        }
     update_q = str(payload.get("operation_text") or payload.get("update_question") or "").strip()
     qa_q = str(payload.get("qa_question") or "").strip()
+    operation_target = payload.get("operation_target")
+    if not isinstance(operation_target, dict):
+        operation_target = {}
     data_change = _normalize_data_change(payload.get("data_change"))
     return {
         "operation_text": update_q or question,
         "update_question": update_q or question,
         "qa_question": qa_q or question,
+        "operation_target": operation_target,
         "data_change": data_change,
         "llm_success": True,
         "llm_raw": content,
@@ -1048,12 +1450,16 @@ def _operation_steps_from_plan(
     planned_question: str,
     structured_context: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    structured_steps = _build_structured_steps(structured_context, operation_plan)
-    if structured_steps:
-        return structured_steps
     steps = operation_plan.get("steps", [])
     if isinstance(steps, list) and steps:
-        return steps
+        enriched_steps = _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
+        if _llm_steps_cover_structured_ops(enriched_steps, structured_context, planned_question):
+            return enriched_steps
+    structured_steps = _build_structured_steps(structured_context, operation_plan, planned_question)
+    if structured_steps:
+        return structured_steps
+    if isinstance(steps, list) and steps:
+        return _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
     return [
         {
             "operation": str(operation_plan.get("operation") or "unknown"),
@@ -1064,14 +1470,124 @@ def _operation_steps_from_plan(
     ]
 
 
+def _enrich_llm_steps_with_structured_data(
+    steps: list[Any],
+    structured_context: dict[str, Any],
+    operation_text: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(steps, list):
+        return []
+    operation_target = structured_context.get("operation_target")
+    data_change = structured_context.get("data_change")
+    if not isinstance(operation_target, dict):
+        operation_target = {}
+    if not isinstance(data_change, dict):
+        data_change = {}
+
+    add_target, add_change = _structured_add_payload(operation_target, data_change)
+    delete_labels = _structured_delete_labels(operation_target)
+    change_steps = _structured_change_steps(operation_target, data_change, [])
+    fallback_delete_idx = 0
+    fallback_change_idx = 0
+
+    enriched: list[dict[str, Any]] = []
+    for raw_step in steps:
+        if not isinstance(raw_step, dict):
+            continue
+        step = dict(raw_step)
+        op = _normalize_operation_token(str(step.get("operation") or ""))
+        step["operation"] = op or str(step.get("operation") or "unknown").strip().lower() or "unknown"
+
+        normalized_target = _normalize_step_operation_target(step.get("operation_target"))
+        step_change = _normalize_data_change(step.get("data_change"))
+        step["operation_target"] = normalized_target
+        step["data_change"] = step_change
+        step["question_hint"] = str(step.get("question_hint") or step.get("question") or "").strip()
+        step["new_points"] = _coerce_points(step.get("new_points", []))
+
+        if op == "add":
+            merged_target = _merge_dict_like(add_target, normalized_target)
+            step["operation_target"] = merged_target
+            if not step_change and add_change:
+                step["data_change"] = dict(add_change)
+            elif add_change:
+                step["data_change"] = _merge_dict_like(add_change, step_change)
+            if not step["new_points"]:
+                step["new_points"] = _points_from_data_change(step["data_change"])
+        elif op == "delete":
+            if not step["operation_target"]:
+                label = delete_labels[fallback_delete_idx] if fallback_delete_idx < len(delete_labels) else ""
+                if label:
+                    step["operation_target"] = {"category_name": label}
+            fallback_delete_idx += 1
+        elif op == "change":
+            if fallback_change_idx < len(change_steps):
+                fallback_change = change_steps[fallback_change_idx]
+                step["operation_target"] = _merge_dict_like(
+                    fallback_change.get("operation_target"),
+                    step["operation_target"],
+                )
+                if fallback_change.get("data_change"):
+                    step["data_change"] = _merge_dict_like(
+                        fallback_change.get("data_change"),
+                        step["data_change"],
+                    )
+            fallback_change_idx += 1
+
+        enriched.append(step)
+
+    return enriched
+
+
+def _normalize_step_operation_target(raw_target: Any) -> dict[str, Any]:
+    if not isinstance(raw_target, dict):
+        return {}
+    normalized = dict(raw_target)
+    label = ""
+    for key in ("category_name", "category", "add_category", "del_category"):
+        value = raw_target.get(key)
+        if isinstance(value, str) and value.strip():
+            label = value.strip()
+            break
+    if label:
+        normalized["category_name"] = label
+    return normalized
+
+
+def _llm_steps_cover_structured_ops(
+    steps: list[Any],
+    structured_context: dict[str, Any],
+    operation_text: str,
+) -> bool:
+    if not steps:
+        return False
+    expected_ops = _ordered_structured_ops("", operation_text)
+    if not expected_ops:
+        return True
+    actual_ops: list[str] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        token = _normalize_operation_token(str(step.get("operation") or ""))
+        if token:
+            actual_ops.append(token)
+    if not actual_ops:
+        return False
+    idx = 0
+    for token in actual_ops:
+        if idx < len(expected_ops) and token == expected_ops[idx]:
+            idx += 1
+    return idx == len(expected_ops)
+
+
 def _build_structured_steps(
     structured_context: dict[str, Any],
     operation_plan: dict[str, Any],
+    operation_text: str,
 ) -> list[dict[str, Any]]:
     if not structured_context:
         return []
 
-    operation = str(structured_context.get("operation") or "").strip().lower()
     operation_target = structured_context.get("operation_target")
     data_change = structured_context.get("data_change")
     if not isinstance(operation_target, dict):
@@ -1093,7 +1609,7 @@ def _build_structured_steps(
                 op_to_hints.setdefault(step_op, []).append(hint)
 
     steps: list[dict[str, Any]] = []
-    ordered_ops = [part.strip() for part in operation.split("+") if part.strip()] or [operation]
+    ordered_ops = _ordered_structured_ops("", operation_text)
     for op in ordered_ops:
         if op in {"del", "delete"}:
             labels = _structured_delete_labels(operation_target)
@@ -1128,6 +1644,47 @@ def _build_structured_steps(
                 steps.extend(change_steps)
                 continue
     return steps
+
+
+def _ordered_structured_ops(operation: str, operation_text: str) -> list[str]:
+    explicit = [part.strip() for part in operation.split("+") if part.strip()] if operation else []
+    normalized_explicit = [_normalize_operation_token(part) for part in explicit]
+    normalized_explicit = [part for part in normalized_explicit if part]
+    if len(normalized_explicit) >= 2:
+        return normalized_explicit
+
+    ordered: list[str] = []
+    text, _, _ = _extract_embedded_structured_context(str(operation_text or "").strip())
+    for sentence in re.split(r"[.;]\s+", text):
+        lowered = sentence.strip().lower()
+        if not lowered:
+            continue
+        token = ""
+        if re.search(r"\b(add|append|insert|adding)\b", lowered):
+            token = "add"
+        elif re.search(r"\b(delete|remove|drop|deleting|removing)\b", lowered):
+            token = "delete"
+        elif re.search(r"\b(change|update|modify|set|changing|updating)\b", lowered):
+            token = "change"
+        if token and (not ordered or ordered[-1] != token):
+            ordered.append(token)
+    if ordered:
+        return ordered
+    if normalized_explicit:
+        return normalized_explicit
+    fallback = _normalize_operation_token(operation)
+    return [fallback] if fallback else []
+
+
+def _normalize_operation_token(token: str) -> str:
+    lowered = str(token or "").strip().lower()
+    if lowered in {"add", "append", "insert"}:
+        return "add"
+    if lowered in {"del", "delete", "remove", "drop"}:
+        return "delete"
+    if lowered in {"change", "update", "modify", "set"}:
+        return "change"
+    return ""
 
 
 def _pick_hint(op_to_hints: dict[str, list[str]], op: str, idx: int) -> str:
@@ -1354,7 +1911,6 @@ def _execute_planned_steps(
         step_inputs = dict(inputs)
         step_inputs["svg_path"] = current_svg
         step_inputs["question"] = step_q
-        step_inputs["chart_type_hint"] = chart_type
         state = run_perception(step_inputs)
         last_state = state
         perception_steps.append(
@@ -1472,7 +2028,6 @@ def _apply_tool_augmented_answer(
     *,
     output: dict[str, Any],
     qa_question: str,
-    chart_type: str,
     answer_data_summary: dict[str, Any],
     tool_phase: dict[str, Any],
     answer_llm: Any,
@@ -1482,13 +2037,11 @@ def _apply_tool_augmented_answer(
     if tool_phase.get("ok") and augmented_path:
         output["answer_input_tool_augmented"] = {
             "question": qa_question,
-            "chart_type": chart_type,
             "output_image_path": augmented_path,
             "data_summary": answer_data_summary,
         }
         output["answer_tool_augmented"] = answer_question(
             qa_question=qa_question,
-            chart_type=chart_type,
             data_summary=answer_data_summary,
             output_image_path=augmented_path,
             image_context_note=(

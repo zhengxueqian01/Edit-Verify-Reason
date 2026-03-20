@@ -8,6 +8,8 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from typing import Any
 
+from chart_agent.config import get_svg_perception_mode
+
 SVG_NS = "http://www.w3.org/2000/svg"
 XLINK_NS = "http://www.w3.org/1999/xlink"
 
@@ -64,7 +66,6 @@ def perceive_svg(svg_path: str | None, question: str | None = None, llm: Any | N
     existing_point_colors = _extract_scatter_point_colors(root)
     point_size_svg, point_marker = _extract_point_size(root)
     x_labels = _extract_x_tick_labels(root, content)
-    bars = _extract_bars(root, x_labels)
     areas = _extract_area_collections(root)
     area_top_boundary, area_fills = _extract_area_top_boundary(areas)
     line_count = _count_line_series(root)
@@ -72,42 +73,14 @@ def perceive_svg(svg_path: str | None, question: str | None = None, llm: Any | N
     num_circles = len(re.findall(r"<circle\b", content))
     num_points = len(existing_points)
 
-    chart_type = "unknown"
-    chart_type_confidence = 0.0
-    if areas:
-        chart_type = "area"
-        chart_type_confidence = 0.7
-    elif bars:
-        chart_type = "bar"
-        chart_type_confidence = 0.7
-    elif num_points > 0:
-        chart_type = "scatter"
-        chart_type_confidence = 0.6
-
-    llm_meta = None
-    if llm is not None:
-        llm_result = _llm_chart_type(
-            question or "",
-            {
-                "num_points": num_points,
-                "num_bars": len(bars),
-                "num_areas": len(areas),
-                "num_lines": line_count,
-                "num_xticks": len(x_ticks),
-                "num_yticks": len(y_ticks),
-            },
-            llm,
-        )
-        if llm_result:
-            chart_type = llm_result["chart_type"]
-            chart_type_confidence = llm_result["confidence"]
-            llm_meta = llm_result.get("llm_meta")
+    chart_type, chart_type_confidence = _rule_based_chart_type(
+        areas=areas,
+        num_points=num_points,
+    )
 
     mapping_ok = False
     if chart_type == "scatter":
         mapping_ok = len(x_ticks) >= 2 and len(y_ticks) >= 2 and num_points > 0
-    elif chart_type == "bar":
-        mapping_ok = len(x_labels) >= 1 and len(y_ticks) >= 2 and len(bars) > 0
     elif chart_type == "area":
         mapping_ok = len(y_ticks) >= 2 and len(area_top_boundary) > 0
     elif chart_type == "line":
@@ -123,7 +96,6 @@ def perceive_svg(svg_path: str | None, question: str | None = None, llm: Any | N
         "num_points": num_points,
         "num_xticks": len(x_ticks),
         "num_yticks": len(y_ticks),
-        "num_bars": len(bars),
         "num_areas": len(areas),
         "num_lines": line_count,
     }
@@ -138,16 +110,52 @@ def perceive_svg(svg_path: str | None, question: str | None = None, llm: Any | N
         "point_size_svg": point_size_svg,
         "point_marker": point_marker,
         "x_labels": x_labels,
-        "bars": bars,
         "area_top_boundary": area_top_boundary,
         "area_fills": area_fills,
     }
+
+    perception_mode = get_svg_perception_mode()
+    llm_meta = None
+    if llm is not None:
+        if perception_mode == "llm_summary":
+            llm_result = _llm_svg_summary_perception(
+                question or "",
+                _build_svg_summary_payload(
+                    primitives_summary=primitives_summary,
+                    mapping_info=mapping_info,
+                    chart_type_guess=chart_type,
+                ),
+                llm,
+            )
+        else:
+            llm_result = _llm_chart_type(
+                question or "",
+                {
+                    "num_points": num_points,
+                    "num_areas": len(areas),
+                    "num_lines": line_count,
+                    "num_xticks": len(x_ticks),
+                    "num_yticks": len(y_ticks),
+                },
+                llm,
+            )
+        if llm_result:
+            chart_type = llm_result["chart_type"]
+            llm_meta = llm_result.get("llm_meta")
+            if chart_type == "scatter":
+                mapping_ok = len(x_ticks) >= 2 and len(y_ticks) >= 2 and num_points > 0
+            elif chart_type == "area":
+                mapping_ok = len(y_ticks) >= 2 and len(area_top_boundary) > 0
+            elif chart_type == "line":
+                mapping_ok = len(x_ticks) >= 2 and len(y_ticks) >= 2
+
     if llm_meta:
         mapping_info["llm_meta"] = llm_meta
 
     return {
         "chart_type": chart_type,
         "chart_type_confidence": chart_type_confidence,
+        "perception_mode": perception_mode,
         "mapping_ok": mapping_ok,
         "mapping_confidence": mapping_confidence,
         "primitives_summary": primitives_summary,
@@ -155,6 +163,56 @@ def perceive_svg(svg_path: str | None, question: str | None = None, llm: Any | N
         "issues": issues,
         "suggested_next_actions": suggested_next_actions,
     }
+
+
+def _rule_based_chart_type(
+    *,
+    areas: list[dict[str, Any]],
+    num_points: int,
+) -> tuple[str, float]:
+    if areas:
+        return "area", 0.7
+    if num_points > 0:
+        return "scatter", 0.6
+    return "unknown", 0.0
+
+
+def _build_svg_summary_payload(
+    *,
+    primitives_summary: dict[str, Any],
+    mapping_info: dict[str, Any],
+    chart_type_guess: str,
+) -> dict[str, Any]:
+    return {
+        "chart_type_guess": chart_type_guess,
+        "primitives_summary": primitives_summary,
+        "axes_bounds": mapping_info.get("axes_bounds"),
+        "x_tick_values": _compact_tick_values(mapping_info.get("x_ticks")),
+        "y_tick_values": _compact_tick_values(mapping_info.get("y_ticks")),
+        "x_labels": _compact_list(mapping_info.get("x_labels"), limit=12),
+        "area_fill_colors": _compact_list(mapping_info.get("area_fills"), limit=8),
+        "point_color_summary": {
+            "dominant": mapping_info.get("dominant_point_color"),
+            "sample": _compact_list(mapping_info.get("existing_point_colors"), limit=8),
+        },
+    }
+
+
+def _compact_tick_values(values: Any, limit: int = 12) -> list[Any]:
+    if not isinstance(values, list):
+        return []
+    compact = [item[1] if isinstance(item, tuple) and len(item) >= 2 else item for item in values]
+    return _compact_list(compact, limit=limit)
+
+
+def _compact_list(values: Any, limit: int = 12) -> list[Any]:
+    if not isinstance(values, list):
+        return []
+    if len(values) <= limit:
+        return values
+    head = max(1, limit // 2)
+    tail = max(1, limit - head)
+    return values[:head] + ["..."] + values[-tail:]
 
 
 def _extract_axes_bounds(root: ET.Element) -> dict[str, float] | None:
@@ -400,46 +458,6 @@ def _iter_path_collections(axes: ET.Element) -> list[ET.Element]:
     return [group for _, group in collections]
 
 
-def _extract_bars(root: ET.Element, labels: list[tuple[float, str]]) -> list[dict[str, Any]]:
-    axes = root.find(f'.//{{{SVG_NS}}}g[@id="axes_1"]')
-    if axes is None:
-        return []
-
-    bars = []
-    for g in axes.findall(f'.//{{{SVG_NS}}}g'):
-        gid = g.get("id", "")
-        if not gid.startswith("patch_") or gid in ("patch_1", "patch_2"):
-            continue
-        path = g.find(f'.//{{{SVG_NS}}}path')
-        if path is None:
-            continue
-        d_attr = path.get("d", "")
-        coords = re.findall(r"[ML]\s+([\d.]+)\s+([\d.]+)", d_attr)
-        if len(coords) < 4:
-            continue
-        x_coords = [float(c[0]) for c in coords]
-        y_coords = [float(c[1]) for c in coords]
-        style = path.get("style", "")
-        clip_path = path.get("clip-path")
-        fill = _extract_fill_color(style)
-        if not clip_path or "fill: none" in style:
-            continue
-        bars.append(
-            {
-                "x_min": min(x_coords),
-                "x_max": max(x_coords),
-                "y_min": min(y_coords),
-                "y_max": max(y_coords),
-                "fill": fill,
-            }
-        )
-
-    for bar in bars:
-        bar_center = (bar["x_min"] + bar["x_max"]) / 2.0
-        bar["label"] = _closest_label(bar_center, labels)
-    return [b for b in bars if b.get("label")]
-
-
 def _extract_x_tick_labels(root: ET.Element, content: str) -> list[tuple[float, str]]:
     axis = root.find(f'.//{{{SVG_NS}}}g[@id="matplotlib.axis_1"]')
     if axis is None:
@@ -544,8 +562,8 @@ def _count_line_series(root: ET.Element) -> int:
 def _llm_chart_type(question: str, summary: dict[str, Any], llm: Any) -> dict[str, Any] | None:
     prompt = (
         "Choose the chart type for an SVG-based plot. "
-        "Return JSON only with keys: chart_type, confidence, rationale. "
-        "chart_type must be one of: scatter, bar, line, area, graph, unknown. "
+        "Return JSON only with key: chart_type. "
+        "chart_type must be one of: scatter, line, area, graph, unknown. "
         f"\nQuestion: {question}\nPrimitives: {summary}"
     )
     try:
@@ -557,19 +575,50 @@ def _llm_chart_type(question: str, summary: dict[str, Any], llm: Any) -> dict[st
     if not payload:
         return None
     chart_type = payload.get("chart_type", "unknown")
-    if chart_type not in ("scatter", "bar", "line", "area", "graph", "unknown"):
+    if chart_type not in ("scatter", "line", "area", "graph", "unknown"):
         chart_type = "unknown"
-    try:
-        confidence = float(payload.get("confidence", 0.3))
-    except (TypeError, ValueError):
-        confidence = 0.3
     return {
         "chart_type": chart_type,
-        "confidence": confidence,
         "llm_meta": {
             "llm_used": True,
             "llm_success": True,
+            "mode": "rules",
             "llm_raw": content,
+        },
+    }
+
+
+def _llm_svg_summary_perception(
+    question: str,
+    svg_summary: dict[str, Any],
+    llm: Any,
+) -> dict[str, Any] | None:
+    prompt = (
+        "You are perceiving an SVG chart from a compact structured summary. "
+        "Infer the chart type from the summary instead of relying on the user question alone. "
+        "Return JSON only with key: chart_type. "
+        "chart_type must be one of: scatter, line, area, graph, unknown. "
+        f"\nQuestion: {question}\nSVG Summary: {json.dumps(svg_summary, ensure_ascii=True)}"
+    )
+    try:
+        response = llm.invoke(prompt)
+    except Exception:
+        return None
+    content = getattr(response, "content", "")
+    payload = _safe_json_loads(content)
+    if not payload:
+        return None
+    chart_type = payload.get("chart_type", "unknown")
+    if chart_type not in ("scatter", "line", "area", "graph", "unknown"):
+        chart_type = "unknown"
+    return {
+        "chart_type": chart_type,
+        "llm_meta": {
+            "llm_used": True,
+            "llm_success": True,
+            "mode": "llm_summary",
+            "llm_raw": content,
+            "svg_summary": svg_summary,
         },
     }
 

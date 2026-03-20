@@ -189,7 +189,7 @@ def _plan_tool_calls(
         "  * scatter: default to isolate_all_color_topologies for cluster/topology reading across all colors; use isolate_color_topology only when a single target color is explicitly required; use add_point/draw_line/highlight_rect only as light local guides.\n"
         "  * line: use zoom_and_highlight_intersection for counting or locating crossings between two named lines, and use add_point/draw_line/highlight_rect only as light local guides.\n"
         "  * area: use draw_global_peak_crosshairs for absolute/global highest-peak questions, and use add_point/draw_line/highlight_rect only as light local guides.\n"
-        "  * bar/unknown/other: do not use scatter-only, line-only, or area-only tools unless the visual structure truly matches that tool.\n"
+        "  * unknown/other: do not use scatter-only, line-only, or area-only tools unless the visual structure truly matches that tool.\n"
         "- Cross-type restrictions:\n"
         "  * Do not use isolate_color_topology or isolate_all_color_topologies unless the chart is a scatter chart or scatter-like point cloud.\n"
         "  * Do not use zoom_and_highlight_intersection unless the chart contains line series and the task is about line crossings/intersections.\n"

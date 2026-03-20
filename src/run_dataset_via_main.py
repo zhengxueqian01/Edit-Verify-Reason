@@ -406,7 +406,6 @@ def main() -> None:
             continue
 
         split_update_question = ""
-        chart_type_hint = str(payload.get("chart_type") or "").strip().lower() or None
         structured_update_context = build_structured_update_context(payload, qa_item)
 
         result: dict[str, Any]
@@ -418,7 +417,6 @@ def main() -> None:
                     "max_render_retries": args.max_render_retries,
                     "svg_path": str(svg_path),
                     "image_path": str(image_path) if image_path.exists() else None,
-                    "chart_type_hint": chart_type_hint,
                     "structured_update_context": structured_update_context,
                     "text_spec": None,
                 }

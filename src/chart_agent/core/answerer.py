@@ -15,7 +15,6 @@ ANSWER_SYSTEM_PROMPT = (
 def answer_question(
     *,
     qa_question: str,
-    chart_type: str,
     data_summary: dict[str, Any],
     output_image_path: str | None,
     image_context_note: str | None = None,
@@ -26,7 +25,6 @@ def answer_question(
         f"{_image_context_prompt_line(image_context_note)}"
         f"Input: {qa_question}\n"
     )
-    print("prompt:",prompt_text)
 
     content = ""
     try:

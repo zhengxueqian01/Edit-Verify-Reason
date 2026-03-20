@@ -4,7 +4,6 @@ import json
 import re
 from typing import Any
 
-_PAIR_PATTERN = re.compile(r"([A-Za-z0-9_\-]+)\s*[:=]\s*(-?\d+(?:\.\d+)?)")
 _POINT_PATTERN = re.compile(r"\((-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\)")
 _EDGE_TUPLE_PATTERN = re.compile(r"\(([^()]+)\)")
 _TIME_KEYWORDS = ("time", "date", "year", "month")
@@ -22,7 +21,6 @@ def select_chart_type(
         return llm_result
 
     points = _POINT_PATTERN.findall(text_spec) or _POINT_PATTERN.findall(question)
-    pairs = _PAIR_PATTERN.findall(text_spec) or _PAIR_PATTERN.findall(question)
     lower_text = f"{text_spec} {question}".lower()
 
     if _looks_like_graph(text_spec, question, lower_text):
@@ -41,14 +39,6 @@ def select_chart_type(
             "rationale": "Detected coordinate pairs (rule fallback).",
         }
 
-    if len(pairs) >= 2:
-        return {
-            "chart_type": "bar",
-            "confidence": 0.75,
-            "parsed_data": {"categories": pairs},
-            "rationale": "Detected category:value pairs (rule fallback).",
-        }
-
     if any(keyword in lower_text for keyword in _TIME_KEYWORDS):
         return {
             "chart_type": "line",
@@ -64,7 +54,7 @@ def _llm_fallback(text_spec: str, question: str, llm: Any) -> dict[str, Any]:
     prompt = (
         "Classify chart type based on text specification and question. "
         "Return JSON with keys: chart_type, confidence, parsed_data, rationale. "
-        "chart_type should be one of: scatter, bar, line, area, graph, unknown."
+        "chart_type should be one of: scatter, line, area, graph, unknown."
         f"\ntext_spec: {text_spec}\nquestion: {question}"
     )
     try:
