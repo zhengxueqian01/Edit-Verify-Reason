@@ -105,26 +105,12 @@ def choose_qa(payload: dict[str, Any], qa_index: int) -> tuple[str, Any, dict[st
 
 
 def build_structured_update_context(payload: dict[str, Any], qa_item: dict[str, Any] | None = None) -> dict[str, Any]:
+    del qa_item
     target = payload.get("operation_target")
     data_change = payload.get("data_change")
-    qa_item = qa_item if isinstance(qa_item, dict) else {}
-    cluster_params = {}
-    if str(payload.get("chart_type") or "").strip().lower() == "scatter":
-        if qa_item.get("eps") is not None or qa_item.get("min_samples") is not None:
-            cluster_params = {
-                "mode": "per_color",
-                "algorithm": "DBSCAN",
-                "eps": qa_item.get("eps"),
-                "min_samples": qa_item.get("min_samples"),
-                "source": "qa_payload",
-            }
     return {
-        "chart_type": str(payload.get("chart_type") or "").strip().lower(),
-        "operation": str(payload.get("operation") or "").strip().lower(),
-        "task": str(payload.get("task") or "").strip().lower(),
         "operation_target": target if isinstance(target, dict) else {},
         "data_change": data_change if isinstance(data_change, dict) else {},
-        "cluster_params": cluster_params,
     }
 
 

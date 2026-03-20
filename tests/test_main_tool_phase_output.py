@@ -17,7 +17,6 @@ class MainToolPhaseOutputTests(unittest.TestCase):
             _apply_tool_augmented_answer(
                 output=output,
                 qa_question="How many clusters?",
-                chart_type="scatter",
                 answer_data_summary={"cluster_result": {}},
                 tool_phase={
                     "ok": True,
@@ -47,7 +46,6 @@ class MainToolPhaseOutputTests(unittest.TestCase):
             _apply_tool_augmented_answer(
                 output=output,
                 qa_question="How many clusters?",
-                chart_type="scatter",
                 answer_data_summary={},
                 tool_phase={"ok": False, "augmented_image_path": "output/scatter/000_tool_aug.png"},
                 answer_llm=object(),
@@ -61,7 +59,8 @@ class MainToolPhaseOutputTests(unittest.TestCase):
     def test_scatter_cluster_can_answer_after_failed_render_when_image_exists(self) -> None:
         allowed = _should_answer_after_failed_render(
             chart_type="scatter",
-            structured_context={"task": "cluster"},
+            structured_context={},
+            qa_question="How many clusters are there now?",
             output_image_path="output/scatter/001_scatter_add_updated.png",
         )
 
@@ -72,6 +71,7 @@ class MainToolPhaseOutputTests(unittest.TestCase):
             allowed = _should_answer_after_failed_render(
                 chart_type="line",
                 structured_context={},
+                qa_question="What is the maximum value?",
                 output_image_path="output/line/001_line_updated.png",
                 attempt_logs=[
                     {
@@ -97,6 +97,7 @@ class MainToolPhaseOutputTests(unittest.TestCase):
             allowed = _should_answer_after_failed_render(
                 chart_type="line",
                 structured_context={},
+                qa_question="What is the maximum value?",
                 output_image_path="output/line/001_line_updated.png",
                 attempt_logs=[
                     {

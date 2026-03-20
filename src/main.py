@@ -338,6 +338,7 @@ def run_main(
     allow_answer_after_failed_render = _should_answer_after_failed_render(
         chart_type=chart_type,
         structured_context=structured_context,
+        qa_question=qa_question,
         output_image_path=last_output_image,
         attempt_logs=attempt_logs,
         max_render_retries=max_render_retries,
@@ -988,18 +989,10 @@ def _normalize_structured_context(structured_context: Any) -> dict[str, Any]:
     if not isinstance(structured_context, dict):
         return {}
     out: dict[str, Any] = {}
-    chart_type = str(structured_context.get("chart_type") or "").strip().lower()
-    task = str(structured_context.get("task") or "").strip().lower()
     operation_target = structured_context.get("operation_target")
     data_change = structured_context.get("data_change")
-    cluster_params = structured_context.get("cluster_params")
-    if chart_type:
-        out["chart_type"] = chart_type
-    if task:
-        out["task"] = task
     out["operation_target"] = operation_target if isinstance(operation_target, dict) else {}
     out["data_change"] = data_change if isinstance(data_change, dict) else {}
-    out["cluster_params"] = cluster_params if isinstance(cluster_params, dict) else {}
     return out
 
 
@@ -1047,19 +1040,8 @@ def _sanitize_cluster_result(cluster_result: dict[str, object] | None) -> dict[s
 
 
 def _resolve_scatter_cluster_params(structured_context: dict[str, Any], qa_question: str) -> dict[str, Any]:
-    params = structured_context.get("cluster_params")
-    if isinstance(params, dict) and (params.get("eps") is not None or params.get("min_samples") is not None):
-        return {
-            "mode": "per_color",
-            "algorithm": "DBSCAN",
-            "eps": params.get("eps"),
-            "min_samples": params.get("min_samples"),
-            "source": str(params.get("source") or "structured_context"),
-        }
-    if str(structured_context.get("chart_type") or "").strip().lower() == "scatter" and (
-        str(structured_context.get("task") or "").strip().lower() == "cluster"
-        or any(token in (qa_question or "").lower() for token in ("cluster", "clusters"))
-    ):
+    del structured_context
+    if any(token in (qa_question or "").lower() for token in ("cluster", "clusters")):
         eps_match = re.search(r"eps\s*=\s*([\d.]+)", qa_question or "", re.IGNORECASE)
         min_samples_match = re.search(r"min_samples?\s*=\s*(\d+)", qa_question or "", re.IGNORECASE)
         eps = float(eps_match.group(1)) if eps_match else None
@@ -1078,12 +1060,14 @@ def _should_answer_after_failed_render(
     *,
     chart_type: str,
     structured_context: dict[str, Any],
+    qa_question: str,
     output_image_path: str | None,
     attempt_logs: list[dict[str, Any]] | None = None,
     max_render_retries: int = 2,
 ) -> bool:
+    del structured_context
     output_path = str(output_image_path or "").strip()
-    if chart_type == "scatter" and str(structured_context.get("task") or "").strip().lower() == "cluster":
+    if chart_type == "scatter" and any(token in (qa_question or "").lower() for token in ("cluster", "clusters")):
         return bool(output_path)
     return _allow_answer_after_exhausted_render_validation(
         output_image_path=output_path,
@@ -1140,6 +1124,8 @@ def _llm_plan_update(question: str, chart_type: str, llm: Any, retry_hint: str =
         "- question_hint is only a short execution hint, not the source of truth for values.\n"
         "- If the input includes structured operation target or data change, preserve them at step level instead of collapsing them into prose.\n"
         "- For scatter add, if point colors are provided in the question/data payload, copy them through to each new_points item.\n"
+        "- For multi-operation requests, steps must follow the operation order stated in the input text. Do not reorder operations unless the input explicitly requires it.\n"
+        "- If one operation expands into multiple substeps, keep those substeps grouped inside that operation block and preserve the block order from the input text.\n"
         "Question:\n"
         f"{question}"
     )
@@ -1230,6 +1216,8 @@ def _llm_plan_svg_intent(
         "- operation must be one of add|delete|change.\n"
         "- Decide the concrete edit target from the operation text and SVG summary.\n"
         "- Keep structured payloads in operation_target/data_change instead of prose when possible.\n"
+        "- For multi-operation requests, steps must follow the operation order stated in the operation text. Do not reorder operations unless the text explicitly requires it.\n"
+        "- If one operation expands into multiple substeps, keep those substeps grouped inside that operation block and preserve the block order from the operation text.\n"
         "- Do not output explanations.\n"
         f"Chart type: {chart_type}\n"
         f"Operation text: {operation_text}\n"
@@ -1257,8 +1245,6 @@ def _intent_structured_context_summary(structured_context: dict[str, Any]) -> di
         summary["operation_target"] = operation_target
     if isinstance(data_change, dict) and data_change:
         summary["data_change"] = data_change
-    if str(structured_context.get("task") or "").strip():
-        summary["task"] = structured_context.get("task")
     return summary
 
 
@@ -1304,6 +1290,7 @@ def _llm_split_request(question: str, llm: Any) -> dict[str, Any]:
         "- qa_question must NOT contain update preconditions like 'after deleting ...'.\n"
         "- Remove leading operation clauses from qa_question, keep only the actual question part.\n"
         "- If there are multiple edit actions, rewrite operation_text as an explicit ordered sequence.\n"
+        "- Preserve the same operation order as the original input text when rewriting operation_text.\n"
         "- Use concise imperative verbs such as 'Delete', 'Add', 'Change', 'Apply'. Never use gerunds like 'adding', 'deleting', 'applying'.\n"
         "- Preferred format for multiple actions: '1. Delete ...; 2. Apply ...; 3. Add ...'.\n"
         "- Extract operation targets into operation_target whenever possible instead of leaving them only in prose.\n"

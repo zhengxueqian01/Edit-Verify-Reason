@@ -8,7 +8,7 @@ from main import _resolve_scatter_cluster_params
 class MainClusterParamsTests(unittest.TestCase):
     def test_resolve_scatter_cluster_params_reads_question_suffix(self) -> None:
         params = _resolve_scatter_cluster_params(
-            {"chart_type": "scatter", "task": "cluster"},
+            {},
             "How many clusters are there? eps=6.4 min_sample=3",
         )
 

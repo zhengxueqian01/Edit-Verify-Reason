@@ -25,12 +25,13 @@ class RunDatasetContextTests(unittest.TestCase):
         self.assertEqual(qa_item["eps"], 5.0)
         self.assertEqual(qa_item["min_samples"], 3)
 
-    def test_build_structured_update_context_reads_cluster_params_from_qa_item(self) -> None:
+    def test_build_structured_update_context_keeps_only_execution_fields(self) -> None:
         context = build_structured_update_context(
             {
                 "chart_type": "scatter",
                 "operation": "add",
-                "task": "cluster",
+                "operation_target": {"add_category": "Echo Bowl"},
+                "data_change": {"add": {"values": [1, 2, 3]}},
             },
             {
                 "eps": 5.0,
@@ -38,9 +39,12 @@ class RunDatasetContextTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(context["cluster_params"]["eps"], 5.0)
-        self.assertEqual(context["cluster_params"]["min_samples"], 3)
-        self.assertEqual(context["cluster_params"]["source"], "qa_payload")
+        self.assertEqual(context["operation_target"]["add_category"], "Echo Bowl")
+        self.assertEqual(context["data_change"]["add"]["values"], [1, 2, 3])
+        self.assertNotIn("task", context)
+        self.assertNotIn("chart_type", context)
+        self.assertNotIn("operation", context)
+        self.assertNotIn("cluster_params", context)
 
 
 if __name__ == "__main__":
