@@ -18,7 +18,6 @@ from chart_agent.core.perception_graph import run_perception
 from chart_agent.core.trace import append_trace
 from chart_agent.core.answerer import answer_question
 from chart_agent.core.vision_tool_phase import run_visual_tool_phase
-from chart_agent.core.clusterer import run_dbscan, run_dbscan_by_color, svg_points_to_data
 from chart_agent.llm_factory import make_llm
 from chart_agent.perception.scatter_svg_updater import update_scatter_svg
 from chart_agent.perception.area_svg_updater import update_area_svg
@@ -64,6 +63,7 @@ def run_main(
     svg_update_mode = get_svg_update_mode(inputs.get("svg_update_mode"))
     svg_perception_mode = inputs.get("svg_perception_mode")
     structured_context = _normalize_structured_context(inputs.get("structured_update_context"))
+    original_question = str(inputs.get("question") or "").strip()
     update_question, qa_question, split_info, split_data_change = _resolve_questions(inputs, splitter_llm)
     structured_context = _merge_structured_operation_target(
         structured_context,
@@ -85,12 +85,12 @@ def run_main(
     )
     original_image_path = _resolve_original_image_path(inputs)
     answer_original_input = {
-        "question": qa_question,
+        "question": original_question,
         "output_image_path": original_image_path,
         "data_summary": {},
     }
     answer_original = answer_question(
-        qa_question=qa_question,
+        qa_question=original_question,
         data_summary={},
         output_image_path=original_image_path,
         image_context_note="This is the original chart image before any requested update is applied.",
@@ -355,55 +355,13 @@ def run_main(
             "issues": ["render_validation_failed"] + list(last_render_check.get("issues", [])),
         }
 
-    cluster_result = None
-    cluster_params = _resolve_scatter_cluster_params(structured_context, qa_question)
-    if chart_type == "scatter" and last_output_image:
-        mapping_info = last_state.perception.get("mapping_info", {})
-        svg_points = mapping_info.get("existing_points_svg", [])
-        svg_colors = mapping_info.get("existing_point_colors", [])
-        x_ticks = mapping_info.get("x_ticks", [])
-        y_ticks = mapping_info.get("y_ticks", [])
-        existing_data = svg_points_to_data(svg_points, x_ticks, y_ticks)
-        points_by_color: dict[str, list[tuple[float, float]]] = {}
-        for point, color in zip(existing_data, svg_colors):
-            color_key = str(color or "").strip().lower()
-            if not color_key:
-                continue
-            points_by_color.setdefault(color_key, []).append(point)
-        for point in used_scatter_points:
-            color_key = str(point.get("color") or point.get("point_color") or point.get("fill") or "").strip().lower()
-            if not color_key:
-                continue
-            points_by_color.setdefault(color_key, []).append((float(point["x"]), float(point["y"])))
-        if points_by_color:
-            cluster_result = run_dbscan_by_color(
-                points_by_color,
-                qa_question,
-                default_eps=float(cluster_params.get("eps") or 6.0),
-                default_min_samples=int(cluster_params.get("min_samples") or 3),
-            )
-        else:
-            new_data = [(p["x"], p["y"]) for p in used_scatter_points]
-            all_points = existing_data + new_data
-            if all_points:
-                cluster_result = run_dbscan(
-                    all_points,
-                    qa_question,
-                    default_eps=float(cluster_params.get("eps") or 6.0),
-                    default_min_samples=int(cluster_params.get("min_samples") or 3),
-                )
-        if cluster_result:
-            output["cluster_result"] = _sanitize_cluster_result(cluster_result)
-
     answer_data_summary: dict[str, Any] = {
         "update_spec": last_state.perception.get("update_spec", {}),
-        "cluster_result": cluster_result,
-        "cluster_params": cluster_params,
-            "mapping_info_summary": {
-                "num_points": last_state.perception.get("primitives_summary", {}).get("num_points"),
-                "num_areas": last_state.perception.get("primitives_summary", {}).get("num_areas"),
-                "num_lines": last_state.perception.get("primitives_summary", {}).get("num_lines"),
-            },
+        "mapping_info_summary": {
+            "num_points": last_state.perception.get("primitives_summary", {}).get("num_points"),
+            "num_areas": last_state.perception.get("primitives_summary", {}).get("num_areas"),
+            "num_lines": last_state.perception.get("primitives_summary", {}).get("num_lines"),
+        },
         "operation_plan": last_operation_plan,
         "perception_steps": last_perception_steps,
         "latest_step_logs": (attempt_logs[-1].get("step_logs", []) if attempt_logs else []),
@@ -694,6 +652,8 @@ def _extract_embedded_structured_context(text: str) -> tuple[str, dict[str, Any]
         for idx in (
             raw.find('"operation_target"'),
             raw.find('"data_change"'),
+            raw.find('operation_target:'),
+            raw.find('data_change:'),
         )
         if idx >= 0
     ]
@@ -712,8 +672,11 @@ def _parse_embedded_structured_context(suffix: str) -> dict[str, Any]:
         return {}
     out: dict[str, Any] = {}
     for key in ("operation_target", "data_change"):
-        pattern = f'"{key}"'
-        idx = text.find(pattern)
+        idx = -1
+        for pattern in (f'"{key}"', f'{key}:'):
+            idx = text.find(pattern)
+            if idx >= 0:
+                break
         if idx < 0:
             continue
         brace_start = text.find("{", idx)
@@ -1031,31 +994,6 @@ def _sanitize_perception(perception: dict[str, object]) -> dict[str, object]:
     return sanitized
 
 
-def _sanitize_cluster_result(cluster_result: dict[str, object] | None) -> dict[str, object] | None:
-    if not cluster_result:
-        return cluster_result
-    sanitized = dict(cluster_result)
-    sanitized.pop("labels", None)
-    return sanitized
-
-
-def _resolve_scatter_cluster_params(structured_context: dict[str, Any], qa_question: str) -> dict[str, Any]:
-    del structured_context
-    if any(token in (qa_question or "").lower() for token in ("cluster", "clusters")):
-        eps_match = re.search(r"eps\s*=\s*([\d.]+)", qa_question or "", re.IGNORECASE)
-        min_samples_match = re.search(r"min_samples?\s*=\s*(\d+)", qa_question or "", re.IGNORECASE)
-        eps = float(eps_match.group(1)) if eps_match else None
-        min_samples = int(min_samples_match.group(1)) if min_samples_match else None
-        return {
-            "mode": "per_color",
-            "algorithm": "DBSCAN",
-            "eps": eps,
-            "min_samples": min_samples,
-            "source": "qa_question_suffix",
-        }
-    return {}
-
-
 def _should_answer_after_failed_render(
     *,
     chart_type: str,
@@ -1114,7 +1052,6 @@ def _llm_plan_update(question: str, chart_type: str, llm: Any, retry_hint: str =
         "You are planning chart-edit operations.\n"
         f"Chart type: {chart_type}\n"
         "Return JSON only with keys:\n"
-        "- operation: one of add|delete|change|unknown\n"
         "- normalized_question: concise imperative update instruction in English\n"
         "- steps: array of step objects in execution order; each step has operation and optional question_hint, operation_target, data_change, and new_points fields\n"
         f"- new_points: {new_points_schema}\n"
@@ -1138,14 +1075,10 @@ def _llm_plan_update(question: str, chart_type: str, llm: Any, retry_hint: str =
     if not payload:
         return _heuristic_plan_update(question)
 
-    op = str(payload.get("operation", "unknown")).lower()
-    if op not in {"add", "delete", "change", "unknown"}:
-        op = "unknown"
     normalized = str(payload.get("normalized_question") or question).strip() or question
     points = _coerce_points(payload.get("new_points", []))
     steps = _coerce_steps(payload.get("steps", []))
     return {
-        "operation": op,
         "normalized_question": normalized,
         "steps": steps,
         "new_points": points,
@@ -1156,16 +1089,8 @@ def _llm_plan_update(question: str, chart_type: str, llm: Any, retry_hint: str =
 
 def _heuristic_plan_update(question: str) -> dict[str, Any]:
     normalized = (question or "").strip()
-    op = "unknown"
-    lowered = normalized.lower()
-    if re.search(r"\b(delete|remove|drop)\b", lowered):
-        op = "delete"
-    elif re.search(r"\b(change|update|modify|set)\b", lowered):
-        op = "change"
-    elif re.search(r"\b(add|append|insert)\b", lowered):
-        op = "add"
+    op = _infer_single_operation_from_text(normalized)
     return {
-        "operation": op,
         "normalized_question": normalized,
         "steps": [{"operation": op, "question": normalized, "new_points": []}] if normalized else [],
         "new_points": [],
@@ -1444,20 +1369,33 @@ def _operation_steps_from_plan(
     if isinstance(steps, list) and steps:
         enriched_steps = _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
         if _llm_steps_cover_structured_ops(enriched_steps, structured_context, planned_question):
-            return enriched_steps
+            return _expand_composite_steps(enriched_steps)
     structured_steps = _build_structured_steps(structured_context, operation_plan, planned_question)
     if structured_steps:
-        return structured_steps
+        return _expand_composite_steps(structured_steps)
     if isinstance(steps, list) and steps:
-        return _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
-    return [
+        return _expand_composite_steps(
+            _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
+        )
+    return _expand_composite_steps([
         {
-            "operation": str(operation_plan.get("operation") or "unknown"),
+            "operation": _infer_single_operation_from_text(planned_question),
             "question": planned_question,
             "question_hint": planned_question,
             "new_points": operation_plan.get("new_points", []),
         }
-    ]
+    ])
+
+
+def _infer_single_operation_from_text(text: str) -> str:
+    lowered = str(text or "").strip().lower()
+    if re.search(r"\b(delete|remove|drop)\b", lowered):
+        return "delete"
+    if re.search(r"\b(change|update|modify|set)\b", lowered):
+        return "change"
+    if re.search(r"\b(add|append|insert)\b", lowered):
+        return "add"
+    return "unknown"
 
 
 def _enrich_llm_steps_with_structured_data(
@@ -1726,14 +1664,12 @@ def _structured_change_steps(
     change_root = data_change.get("change") if isinstance(data_change.get("change"), dict) else data_change
     if not isinstance(change_root, dict):
         return []
-    changes = change_root.get("changes")
-    if not isinstance(changes, list) or not changes:
+    atomic_changes = _flatten_atomic_changes(change_root.get("changes"))
+    if not atomic_changes:
         return []
 
     steps: list[dict[str, Any]] = []
-    for idx, change in enumerate(changes):
-        if not isinstance(change, dict):
-            continue
+    for idx, change in enumerate(atomic_changes):
         label = str(change.get("category_name") or "").strip()
         step_target = {"category_name": label} if label else {}
         step_change = {
@@ -1750,6 +1686,118 @@ def _structured_change_steps(
             }
         )
     return steps
+
+
+def _flatten_atomic_changes(changes: Any) -> list[dict[str, Any]]:
+    if not isinstance(changes, list):
+        return []
+    flattened: list[dict[str, Any]] = []
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        label = str(change.get("category_name") or change.get("category") or "").strip()
+        updates = change.get("updates")
+        if isinstance(updates, list) and updates:
+            for update in updates:
+                if not isinstance(update, dict):
+                    continue
+                year = update.get("year")
+                value = update.get("value")
+                if year in (None, "") or value is None:
+                    continue
+                flattened.append(
+                    {
+                        "category_name": label,
+                        "years": [str(year)],
+                        "values": [value],
+                    }
+                )
+            continue
+        points = change.get("points")
+        if isinstance(points, list) and points:
+            for point in points:
+                if not isinstance(point, dict):
+                    continue
+                year = point.get("year")
+                value = point.get("value")
+                if year in (None, "") or value is None:
+                    continue
+                flattened.append(
+                    {
+                        "category_name": label,
+                        "years": [str(year)],
+                        "values": [value],
+                    }
+                )
+            continue
+        years = change.get("years")
+        values = change.get("values")
+        if isinstance(years, list) and isinstance(values, list) and years and values:
+            for year, value in zip(years, values):
+                flattened.append(
+                    {
+                        "category_name": label,
+                        "years": [str(year)],
+                        "values": [value],
+                    }
+                )
+            continue
+        year = change.get("year")
+        value = change.get("value")
+        if year not in (None, "") and value is not None:
+            flattened.append(
+                {
+                    "category_name": label,
+                    "years": [str(year)],
+                    "values": [value],
+                }
+            )
+    return flattened
+
+
+def _expand_composite_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    expanded: list[dict[str, Any]] = []
+    for raw_step in steps:
+        if not isinstance(raw_step, dict):
+            continue
+        step = dict(raw_step)
+        operation = str(step.get("operation") or "").strip().lower()
+        operation_target = step.get("operation_target")
+        data_change = step.get("data_change")
+        if not isinstance(operation_target, dict):
+            operation_target = {}
+        if not isinstance(data_change, dict):
+            data_change = {}
+
+        if operation == "delete":
+            labels = _structured_delete_labels(operation_target)
+            if len(labels) > 1:
+                for label in labels:
+                    split_step = dict(step)
+                    split_step["operation_target"] = {"category_name": label}
+                    expanded.append(split_step)
+                continue
+
+        if operation == "change":
+            atomic_changes = _flatten_atomic_changes(data_change.get("changes"))
+            if len(atomic_changes) > 1:
+                for change in atomic_changes:
+                    split_step = dict(step)
+                    label = str(change.get("category_name") or "").strip()
+                    split_step["operation_target"] = {"category_name": label} if label else {}
+                    split_step["data_change"] = {"mode": "multi_step", "changes": [change]}
+                    expanded.append(split_step)
+                continue
+            if len(atomic_changes) == 1:
+                split_step = dict(step)
+                label = str(atomic_changes[0].get("category_name") or "").strip()
+                split_step["operation_target"] = {"category_name": label} if label else operation_target
+                split_step["data_change"] = {"mode": "multi_step", "changes": atomic_changes}
+                expanded.append(split_step)
+                continue
+
+        expanded.append(step)
+    return expanded
 
 
 def _points_from_data_change(data_change: dict[str, Any]) -> list[dict[str, float]]:
@@ -1819,7 +1867,14 @@ def _render_structured_step_question(step: dict[str, Any]) -> str:
             return f'Add the category/series "{label}"'
 
     if operation == "delete":
-        label = str(operation_target.get("category_name") or "").strip()
+        label_value = operation_target.get("category_name")
+        if isinstance(label_value, list):
+            labels = [str(item).strip() for item in label_value if str(item).strip()]
+            if len(labels) > 1:
+                return "; ".join(f'Delete the category/series "{label}"' for label in labels)
+            label = labels[0] if labels else ""
+        else:
+            label = str(label_value or "").strip()
         if label:
             return f'Delete the category/series "{label}"'
 
@@ -1831,6 +1886,21 @@ def _render_structured_step_question(step: dict[str, Any]) -> str:
                 if not isinstance(change, dict):
                     continue
                 label = str(change.get("category_name") or "").strip()
+                points = change.get("points")
+                if isinstance(points, list):
+                    for point in points:
+                        if not isinstance(point, dict):
+                            continue
+                        year = point.get("year")
+                        value = point.get("value")
+                        if label and year not in (None, "") and value is not None:
+                            clauses.append(f'Change "{label}" in {year} to {value}')
+                    continue
+                year = change.get("year")
+                value = change.get("value")
+                if label and year not in (None, "") and value is not None:
+                    clauses.append(f'Change "{label}" in {year} to {value}')
+                    continue
                 years = change.get("years")
                 values = change.get("values")
                 if not isinstance(years, list) or not isinstance(values, list):

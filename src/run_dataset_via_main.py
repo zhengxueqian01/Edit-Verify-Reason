@@ -114,6 +114,124 @@ def build_structured_update_context(payload: dict[str, Any], qa_item: dict[str, 
     }
 
 
+def build_full_input(payload: dict[str, Any], qa_question: str) -> str:
+    question = str(qa_question or "").strip()
+    prefix = _synthesize_operation_prefix(payload)
+    if prefix and not _question_already_has_update_context(question):
+        if question:
+            question = f"{prefix}, {question[:1].lower()}{question[1:]}" if len(question) > 1 else f"{prefix}, {question.lower()}"
+        else:
+            question = prefix
+    return _append_structured_tail(
+        question,
+        operation_target=payload.get("operation_target"),
+        data_change=payload.get("data_change"),
+    )
+
+
+def _question_already_has_update_context(question: str) -> bool:
+    text = str(question or "").strip().lower()
+    if not text:
+        return False
+    if any(token in text for token in ("after ", "before ", "following ", "once ", "when ")):
+        return True
+    return bool(re.search(r"\b(add|delete|remove|drop|change|update|modify|insert|append)\w*\b", text))
+
+
+def _synthesize_operation_prefix(payload: dict[str, Any]) -> str:
+    operation = str(payload.get("operation") or "").strip().lower()
+    operation_target = payload.get("operation_target")
+    data_change = payload.get("data_change")
+    if not isinstance(operation_target, dict):
+        operation_target = {}
+    if not isinstance(data_change, dict):
+        data_change = {}
+
+    clauses: list[str] = []
+    ordered_ops = [part.strip() for part in operation.split("+") if part.strip()] if operation else []
+    if not ordered_ops:
+        ordered_ops = _infer_ops_from_payload(operation_target, data_change)
+
+    for op in ordered_ops:
+        normalized = _normalize_eval_operation_token(op)
+        if normalized == "add":
+            label = _first_non_empty_string(operation_target.get("add_category"), operation_target.get("category_name"))
+            if label:
+                clauses.append(f'adding the category "{label}"')
+            else:
+                clauses.append("adding the requested category")
+        elif normalized == "delete":
+            label = _first_non_empty_string(operation_target.get("del_category"), operation_target.get("category_name"))
+            if label:
+                clauses.append(f'deleting the category "{label}"')
+            else:
+                clauses.append("deleting the requested category")
+        elif normalized == "change":
+            label = _first_non_empty_string(operation_target.get("change_category"), operation_target.get("category_name"))
+            change_root = data_change.get("change") if isinstance(data_change.get("change"), dict) else data_change
+            years = change_root.get("years") if isinstance(change_root, dict) else None
+            values = change_root.get("values") if isinstance(change_root, dict) else None
+            if label and isinstance(years, list) and years and isinstance(values, list) and values:
+                clauses.append(f'changing "{label}" in {years[0]} to {values[0]}')
+            elif label:
+                clauses.append(f'changing the category "{label}"')
+            else:
+                clauses.append("applying the requested value changes")
+
+    if not clauses:
+        return ""
+    if len(clauses) == 1:
+        return f"After {clauses[0]}"
+    return "After " + ", ".join(clauses[:-1]) + f", and {clauses[-1]}"
+
+
+def _infer_ops_from_payload(operation_target: dict[str, Any], data_change: dict[str, Any]) -> list[str]:
+    ops: list[str] = []
+    if any(operation_target.get(key) for key in ("del_category", "del_categories")) or data_change.get("del"):
+        ops.append("delete")
+    if any(operation_target.get(key) for key in ("add_category",)) or data_change.get("add"):
+        ops.append("add")
+    if any(operation_target.get(key) for key in ("change_category",)) or data_change.get("change"):
+        ops.append("change")
+    return ops
+
+
+def _normalize_eval_operation_token(token: str) -> str:
+    lowered = str(token or "").strip().lower()
+    if lowered in {"add", "append", "insert"}:
+        return "add"
+    if lowered in {"del", "delete", "remove", "drop"}:
+        return "delete"
+    if lowered in {"change", "update", "modify", "set"}:
+        return "change"
+    return lowered
+
+
+def _first_non_empty_string(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+    return ""
+
+
+def _append_structured_tail(question: str, *, operation_target: Any, data_change: Any) -> str:
+    text = str(question or "").strip()
+    tail_parts: list[str] = []
+    if isinstance(operation_target, dict) and operation_target:
+        tail_parts.append(f'"operation_target": {json.dumps(operation_target, ensure_ascii=False)}')
+    if isinstance(data_change, dict) and data_change:
+        tail_parts.append(f'"data_change": {json.dumps(data_change, ensure_ascii=False)}')
+    if not tail_parts:
+        return text
+    if not text:
+        return ",\n".join(tail_parts)
+    return text + "\n" + ",\n".join(tail_parts)
+
+
 def list_case_dirs(input_dir: Path) -> list[Path]:
     out: list[Path] = []
     for p in sorted(input_dir.iterdir()):
@@ -393,13 +511,14 @@ def main() -> None:
 
         split_update_question = ""
         structured_update_context = build_structured_update_context(payload, qa_item)
+        full_input = build_full_input(payload, qa_question)
 
         result: dict[str, Any]
         err = ""
         try:
             result = run_main(
                 {
-                    "question": qa_question,
+                    "question": full_input,
                     "max_render_retries": args.max_render_retries,
                     "svg_path": str(svg_path),
                     "image_path": str(image_path) if image_path.exists() else None,

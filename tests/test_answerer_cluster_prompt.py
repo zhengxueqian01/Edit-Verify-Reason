@@ -30,12 +30,13 @@ class AnswererClusterPromptTests(unittest.TestCase):
 
         self.assertIsInstance(llm.prompt, list)
         self.assertEqual(2, len(llm.prompt))
-        self.assertEqual(ANSWER_SYSTEM_PROMPT, llm.prompt[0].content)
+        self.assertIn(ANSWER_SYSTEM_PROMPT, llm.prompt[0].content)
+        self.assertIn("Image context: The requested chart update has already been applied.", llm.prompt[0].content)
 
         human_content = llm.prompt[1].content
         self.assertIsInstance(human_content, str)
-        self.assertIn("Image context: The requested chart update has already been applied.", human_content)
         self.assertIn("Input: How many intersections are there?", human_content)
+        self.assertNotIn("Image context:", human_content)
         self.assertNotIn("QA Question:", human_content)
         self.assertNotIn("Chart type:", human_content)
         self.assertNotIn("Image path", human_content)

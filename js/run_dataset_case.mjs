@@ -55,11 +55,7 @@ function parseArgs(argv) {
     outDir: path.join(PROJECT_ROOT, "output", "dataset_runner_js"),
     aiModel: envOrDotenv("GPT_MODEL", "gpt-5.2"),
     aiBaseUrl: envOrDotenv("GPT_BASE_URL", "https://aihubmix.com/v1"),
-    aiApiKey:
-      envOrDotenv("Aihubmix_API_KEY_ZZT") ||
-      envOrDotenv("AIHUBMIX_API_KEY") ||
-      envOrDotenv("OPENAI_API_KEY") ||
-      "",
+    aiApiKey: envOrDotenv("Aihubmix_API_KEY") || "",
     resvgBin: process.env.RESVG_BIN || "",
   };
 

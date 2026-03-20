@@ -20,40 +20,26 @@ def answer_question(
     image_context_note: str | None = None,
     llm: Any,
 ) -> dict[str, Any]:
-    cluster_result = data_summary.get("cluster_result")
-    prompt_text = (
-        f"{_image_context_prompt_line(image_context_note)}"
-        f"Input: {qa_question}\n"
-    )
+    system_prompt = _compose_system_prompt(image_context_note)
+    prompt_text = f"Input: {qa_question}\n"
 
     content = ""
     try:
         response = _invoke_multimodal_or_text(
             llm,
-            system_prompt=ANSWER_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=prompt_text,
             image_path=output_image_path,
         )
         content = _coerce_content_to_text(getattr(response, "content", ""))
     except Exception as exc:
-        if cluster_result and "cluster" in qa_question.lower():
-            return _normalize_answer_payload(
-                {
-                "answer": f"DBSCAN found {cluster_result.get('clusters')} clusters.",
-                "confidence": 0.7,
-                "issues": ["llm_call_failed"],
-                "dbscan_result": cluster_result,
-                "prompt": prompt_text,
-                "system_prompt": ANSWER_SYSTEM_PROMPT,
-                }
-            )
         return _normalize_answer_payload(
             {
             "answer": "LLM call failed; unable to answer.",
             "confidence": 0.0,
             "issues": [str(exc)],
             "prompt": prompt_text,
-            "system_prompt": ANSWER_SYSTEM_PROMPT,
+            "system_prompt": system_prompt,
             }
         )
 
@@ -65,27 +51,21 @@ def answer_question(
             "issues": ["llm_response_not_json"],
             "llm_raw": content,
             "prompt": prompt_text,
-            "system_prompt": ANSWER_SYSTEM_PROMPT,
+            "system_prompt": system_prompt,
         }
-        if cluster_result and "cluster" in qa_question.lower():
-            fallback["answer"] = f"DBSCAN found {cluster_result.get('clusters')} clusters."
-            fallback["confidence"] = 0.7
-            fallback["dbscan_result"] = cluster_result
         return _normalize_answer_payload(fallback)
 
     payload["llm_raw"] = content
     payload["prompt"] = prompt_text
-    payload["system_prompt"] = ANSWER_SYSTEM_PROMPT
-    if cluster_result:
-        payload["dbscan_result"] = cluster_result
+    payload["system_prompt"] = system_prompt
     return _normalize_answer_payload(payload)
 
 
-def _image_context_prompt_line(image_context_note: str | None) -> str:
+def _compose_system_prompt(image_context_note: str | None) -> str:
     note = str(image_context_note or "").strip()
     if not note:
-        return ""
-    return f"Image context: {note}\n"
+        return ANSWER_SYSTEM_PROMPT
+    return f"{ANSWER_SYSTEM_PROMPT}\nImage context: {note}"
 
 
 def _normalize_answer_payload(payload: dict[str, Any]) -> dict[str, Any]:

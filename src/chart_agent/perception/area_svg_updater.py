@@ -1093,12 +1093,7 @@ def _extract_area_groups(axes: ET.Element) -> list[dict[str, Any]]:
         fill = _extract_fill_color(style) or path.get("fill") or ""
         points = _extract_points(path.get("d", ""))
         groups.append({"group": g, "path": path, "fill": fill.lower(), "points": points, "id": gid})
-
-    def _id_key(item: dict[str, Any]) -> int:
-        match = re.search(r"_(\d+)$", item["id"])
-        return int(match.group(1)) if match else 0
-
-    return sorted(groups, key=_id_key)
+    return groups
 
 
 def _extract_points(d_attr: str) -> list[tuple[float, float]]:

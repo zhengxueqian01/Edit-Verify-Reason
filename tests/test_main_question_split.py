@@ -194,7 +194,6 @@ class MainQuestionSplitTests(unittest.TestCase):
         structured_context = _merge_structured_operation_target(structured_context, split_info.get("operation_target"))
         structured_context = _merge_structured_data_change(structured_context, data_change)
         plan = {
-            "operation": "unknown",
             "normalized_question": operation_text,
             "steps": [
                 {
@@ -241,7 +240,6 @@ class MainQuestionSplitTests(unittest.TestCase):
         structured_context = _merge_structured_operation_target(structured_context, split_info.get("operation_target"))
         structured_context = _merge_structured_data_change(structured_context, data_change)
         plan = {
-            "operation": "delete",
             "normalized_question": operation_text,
             "steps": [
                 {
@@ -277,7 +275,6 @@ class MainQuestionSplitTests(unittest.TestCase):
             )
         )
         operation_plan = {
-            "operation": "change",
             "normalized_question": "Delete Oracle Labs and add Cinder Guild.",
             "steps": [],
             "new_points": [],
@@ -333,7 +330,6 @@ class MainQuestionSplitTests(unittest.TestCase):
         llm = _StubLLM(
             json.dumps(
                 {
-                    "operation": "add",
                     "normalized_question": "Add the specified points to the scatter chart.",
                     "steps": [{"operation": "add", "question_hint": "Insert points."}],
                     "new_points": [{"x": 1, "y": 2, "color": "blue"}],
@@ -372,6 +368,79 @@ class MainQuestionSplitTests(unittest.TestCase):
                     "new_points": [],
                 }
             ],
+        )
+
+    def test_operation_steps_expand_multi_change_into_atomic_steps(self) -> None:
+        plan = {
+            "normalized_question": "Apply the listed value revisions.",
+            "steps": [
+                {
+                    "operation": "change",
+                    "question_hint": "Apply the listed value revisions.",
+                    "operation_target": {"category_names": ["Alpha", "Beta"]},
+                    "data_change": {
+                        "mode": "multi_step",
+                        "changes": [
+                            {"category_name": "Alpha", "years": ["2020"], "values": [11]},
+                            {"category_name": "Beta", "years": ["2021", "2022"], "values": [12, 13]},
+                        ],
+                    },
+                    "new_points": [],
+                }
+            ],
+            "new_points": [],
+            "llm_success": True,
+        }
+
+        steps = _operation_steps_from_plan(plan, "Apply the listed value revisions.", {})
+
+        self.assertEqual([step["operation"] for step in steps], ["change", "change", "change"])
+        self.assertEqual(
+            [step["operation_target"] for step in steps],
+            [
+                {"category_name": "Alpha"},
+                {"category_name": "Beta"},
+                {"category_name": "Beta"},
+            ],
+        )
+        self.assertEqual(
+            [step["data_change"]["changes"][0]["years"][0] for step in steps],
+            ["2020", "2021", "2022"],
+        )
+
+    def test_operation_steps_expand_update_style_changes_into_atomic_steps(self) -> None:
+        plan = {
+            "normalized_question": "Apply the listed value revisions.",
+            "steps": [
+                {
+                    "operation": "change",
+                    "question_hint": "Apply the listed value revisions.",
+                    "operation_target": {"category_name": "Alpha"},
+                    "data_change": {
+                        "mode": "multi_step",
+                        "changes": [
+                            {
+                                "category": "Alpha",
+                                "updates": [
+                                    {"year": "2020", "value": 11},
+                                    {"year": "2021", "value": 12},
+                                ],
+                            }
+                        ],
+                    },
+                    "new_points": [],
+                }
+            ],
+            "new_points": [],
+            "llm_success": True,
+        }
+
+        steps = _operation_steps_from_plan(plan, "Apply the listed value revisions.", {})
+
+        self.assertEqual([step["operation_target"] for step in steps], [{"category_name": "Alpha"}, {"category_name": "Alpha"}])
+        self.assertEqual(
+            [step["data_change"]["changes"][0]["values"][0] for step in steps],
+            [11, 12],
         )
 
 

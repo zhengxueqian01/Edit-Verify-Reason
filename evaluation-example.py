@@ -69,9 +69,9 @@ def main() -> None:
     args = parser.parse_args()
 
     load_dotenv()
-    api_key = os.getenv("AIHUBMIX_API_KEY_ZZT", "")
+    api_key = os.getenv("Aihubmix_API_KEY", "")
     if not api_key:
-        raise SystemExit("AIHUBMIX_API_KEY_ZZT is required.")
+        raise SystemExit("Aihubmix_API_KEY is required.")
 
     client = OpenAI(api_key=api_key, base_url=args.base_url)
     repo_root = Path(__file__).resolve().parents[2]

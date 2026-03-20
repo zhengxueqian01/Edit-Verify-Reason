@@ -672,6 +672,24 @@
       background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
     }
 
+
+    .workflow-sticky-nav {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+      flex-wrap: wrap;
+    }
+
     .workflow-toolbar {
       display: flex;
       flex-direction: column;
@@ -849,6 +867,11 @@
       gap: 10px;
     }
 
+    .workflow-item-header > div:first-child {
+      flex: 1;
+      min-width: 0;
+    }
+
     .workflow-item-title {
       font-size: 13px;
       font-weight: 700;
@@ -967,6 +990,8 @@
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
+      min-width: 0;
+      justify-content: flex-end;
     }
 
     .pill {
@@ -981,6 +1006,10 @@
       font-size: 11px;
       font-weight: 700;
       line-height: 1.2;
+      max-width: 100%;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
     }
 
     .pill.success {
@@ -2278,6 +2307,13 @@
       const shown = playback.expandAll ? total : playback.revealCount;
       const progress = total ? Math.round((shown / total) * 100) : 0;
       return `
+        <div class="workflow-sticky-nav">
+          <button type="button" class="workflow-btn" data-workflow-action="prev"${playback.activeIndex <= 0 ? ' disabled' : ''}>上一步</button>
+          <button type="button" class="workflow-btn" data-workflow-action="next"${playback.activeIndex >= total - 1 ? ' disabled' : ''}>下一步</button>
+          <button type="button" class="workflow-btn ${playback.autoPlay ? 'active' : ''}" data-workflow-action="toggle-play"${!total ? ' disabled' : ''}>${playback.autoPlay ? '暂停播放' : '自动播放'}</button>
+          <button type="button" class="workflow-btn" data-workflow-action="restart"${!total ? ' disabled' : ''}>重新播放</button>
+          <button type="button" class="workflow-btn ${playback.expandAll ? 'active' : ''}" data-workflow-action="toggle-expand"${!total ? ' disabled' : ''}>${playback.expandAll ? '返回分步' : '展开全部'}</button>
+        </div>
         <section class="workflow-section current">
           <div class="workflow-item-header">
             <div>
@@ -2294,13 +2330,6 @@
               <div class="workflow-toolbar-copy">
                 <div class="workflow-toolbar-title">按阶段查看当前运行</div>
                 <div class="workflow-toolbar-subtitle">默认会自动播放整个链路，也可以手动跳到任意阶段。</div>
-              </div>
-              <div class="workflow-toolbar-actions">
-                <button type="button" class="workflow-btn" data-workflow-action="prev"${playback.activeIndex <= 0 ? ' disabled' : ''}>上一步</button>
-                <button type="button" class="workflow-btn" data-workflow-action="next"${playback.activeIndex >= total - 1 ? ' disabled' : ''}>下一步</button>
-                <button type="button" class="workflow-btn ${playback.autoPlay ? 'active' : ''}" data-workflow-action="toggle-play"${!total ? ' disabled' : ''}>${playback.autoPlay ? '暂停播放' : '自动播放'}</button>
-                <button type="button" class="workflow-btn" data-workflow-action="restart"${!total ? ' disabled' : ''}>重新播放</button>
-                <button type="button" class="workflow-btn ${playback.expandAll ? 'active' : ''}" data-workflow-action="toggle-expand"${!total ? ' disabled' : ''}>${playback.expandAll ? '返回分步' : '展开全部'}</button>
               </div>
             </div>
             <div class="workflow-progress-track">

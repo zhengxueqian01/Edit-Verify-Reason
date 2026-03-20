@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # API配置
-AIHUBMIX_API_KEY = os.getenv("Aihubmix_API_KEY", os.getenv("Aihubmix_API_KEY_ZZT"))
+AIHUBMIX_API_KEY = os.getenv("Aihubmix_API_KEY")
 SILICONFLOW_API_KEY = os.getenv("Siliconflow_API_KEY")
 DOUBAO_API_KEY = os.getenv("Doubao_API_KEY")
 

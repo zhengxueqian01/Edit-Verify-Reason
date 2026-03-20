@@ -54,7 +54,7 @@ class ModelConfig:
 
 _load_env()
 
-AIHUBMIX_API_KEY = _get_env("Aihubmix_API_KEY", _get_env("Aihubmix_API_KEY_ZZT"))
+AIHUBMIX_API_KEY = _get_env("Aihubmix_API_KEY")
 SILICONFLOW_API_KEY = _get_env("Siliconflow_API_KEY")
 DOUBAO_API_KEY = _get_env("Doubao_API_KEY")
 

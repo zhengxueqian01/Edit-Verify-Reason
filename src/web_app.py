@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import traceback
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -129,6 +130,10 @@ class AppHandler(BaseHTTPRequestHandler):
             return
 
         payload = _build_response_payload(result, request_data["enhanced_image_path"])
+        output_dir = Path(request_data["inputs"]["svg_path"]).parent
+        with (output_dir / "result.json").open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
         self._send_json(200 if payload.get("ok") else 422, payload)
 
     def _handle_stream_run(self, request_data: dict[str, Any]) -> None:
@@ -156,6 +161,10 @@ class AppHandler(BaseHTTPRequestHandler):
 
         try:
             result = run_main(request_data["inputs"], event_callback=send_event)
+            snapshot = _build_response_payload(result, request_data["enhanced_image_path"])
+            output_dir = Path(request_data["inputs"]["svg_path"]).parent
+            with (output_dir / "result.json").open("w", encoding="utf-8") as f:
+                json.dump(snapshot, f, ensure_ascii=False, indent=2)
         except Exception as exc:
             error_payload = {
                 "error": str(exc),
@@ -236,7 +245,8 @@ def _prepare_run_request(form: cgi.FieldStorage) -> dict[str, Any]:
 
     UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
     original_name = Path(getattr(svg_item, "filename", "upload.svg") or "upload.svg").name
-    case_stem = Path(original_name).stem
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    case_stem = f"{timestamp}_{Path(original_name).stem}"
     upload_dir = UPLOAD_ROOT / case_stem
     upload_dir.mkdir(parents=True, exist_ok=True)
 

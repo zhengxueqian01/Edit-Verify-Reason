@@ -945,8 +945,8 @@ def _svg_zoom_and_highlight_intersection(
     if len(points_a) < 2 or len(points_b) < 2:
         raise ValueError("line geometry not found")
 
-    _svg_highlight_polyline(overlay, ns, points_a, "#ff2d55", width=3.2, label=line_a)
-    _svg_highlight_polyline(overlay, ns, points_b, "#007aff", width=3.2, label=line_b)
+    _svg_highlight_polyline(overlay, ns, points_a, stroke_a, width=4.2, label="")
+    _svg_highlight_polyline(overlay, ns, points_b, stroke_b, width=4.2, label="")
 
     intersections = _polyline_intersections(points_a, points_b)
     if not intersections:

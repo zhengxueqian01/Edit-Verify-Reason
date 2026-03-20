@@ -170,7 +170,9 @@ class VisionToolPhaseTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(paths), 2)
         self.assertGreaterEqual(len(circles), 1)
-        self.assertEqual(sorted(text.text for text in texts), ["AetherNet", "Starburst Online"])
+        self.assertEqual(texts, [])
+        overlay_strokes = [path.get("stroke") for path in paths[:2]]
+        self.assertEqual(sorted(overlay_strokes), ["#0000ff", "#ff0000"])
 
 
 if __name__ == "__main__":

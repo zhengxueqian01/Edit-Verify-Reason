@@ -94,9 +94,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ai-api-key",
         default=(
-            _env_or_dotenv("Aihubmix_API_KEY_ZZT")
-            or _env_or_dotenv("AIHUBMIX_API_KEY")
-            or _env_or_dotenv("OPENAI_API_KEY")
+            _env_or_dotenv("Aihubmix_API_KEY")
             or ""
         ),
         help="API key for aihubmix (falls back to env vars).",
@@ -436,7 +434,7 @@ def call_aihubmix_gpt_answer(
     timeout_sec: int = 90,
 ) -> dict[str, Any]:
     if not api_key.strip():
-        return {"ok": False, "error": "missing api key (set --ai-api-key or env Aihubmix_API_KEY_ZZT)."}
+        return {"ok": False, "error": "missing api key (set --ai-api-key or env Aihubmix_API_KEY)."}
     if not image_path.exists():
         return {"ok": False, "error": f"image not found: {image_path}"}
     try:
