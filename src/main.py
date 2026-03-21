@@ -843,7 +843,9 @@ def _parse_add_clause(text: str) -> dict[str, Any] | None:
     years, values = _extract_years_and_values(text)
     add_change: dict[str, Any] = {}
     if years and values:
-        add_change = {"mode": "full_series", "years": years, "values": values}
+        add_change = {"category_name": label, "years": years, "values": values}
+    else:
+        add_change = {"category_name": label}
     return {
         "operation": "add",
         "operation_text": _normalize_gerund_clause(text),
@@ -860,7 +862,7 @@ def _parse_delete_clause(text: str) -> dict[str, Any] | None:
         "operation": "delete",
         "operation_text": _normalize_gerund_clause(text),
         "operation_target": {"del_category": label},
-        "data_change": {"category": label},
+        "data_change": {"category_name": label},
     }
 
 
@@ -1372,6 +1374,9 @@ def _operation_steps_from_plan(
             return _expand_composite_steps(enriched_steps)
     structured_steps = _build_structured_steps(structured_context, operation_plan, planned_question)
     if structured_steps:
+        if isinstance(steps, list) and steps:
+            enriched_steps = _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
+            return _expand_composite_steps(_merge_structured_with_existing_steps(structured_steps, enriched_steps))
         return _expand_composite_steps(structured_steps)
     if isinstance(steps, list) and steps:
         return _expand_composite_steps(
@@ -1385,6 +1390,59 @@ def _operation_steps_from_plan(
             "new_points": operation_plan.get("new_points", []),
         }
     ])
+
+
+def _step_match_key(step: dict[str, Any]) -> tuple[str, str, str]:
+    operation = str(step.get("operation") or "").strip().lower()
+    target = step.get("operation_target")
+    data_change = step.get("data_change")
+    label = ""
+    if isinstance(target, dict):
+        label = _first_non_empty_string(target.get("category_name"), target.get("category_names"))
+    marker = ""
+    if operation == "change" and isinstance(data_change, dict):
+        changes = data_change.get("changes")
+        if isinstance(changes, list) and changes and isinstance(changes[0], dict):
+            years = changes[0].get("years")
+            if isinstance(years, list) and years:
+                marker = str(years[0])
+    return operation, label, marker
+
+
+def _merge_structured_with_existing_steps(
+    structured_steps: list[dict[str, Any]],
+    existing_steps: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    remaining: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for step in existing_steps:
+        remaining.setdefault(_step_match_key(step), []).append(step)
+
+    merged: list[dict[str, Any]] = []
+    for structured_step in structured_steps:
+        key = _step_match_key(structured_step)
+        matches = remaining.get(key) or []
+        if matches:
+            existing = matches.pop(0)
+            merged_step = dict(structured_step)
+            merged_step["operation_target"] = _merge_dict_like(
+                structured_step.get("operation_target"),
+                existing.get("operation_target"),
+            )
+            merged_step["data_change"] = _merge_dict_like(
+                structured_step.get("data_change"),
+                existing.get("data_change"),
+            )
+            merged_step["new_points"] = _coerce_points(existing.get("new_points", structured_step.get("new_points", [])))
+            merged_step["question_hint"] = str(
+                existing.get("question_hint") or structured_step.get("question_hint") or ""
+            ).strip()
+            merged.append(merged_step)
+        else:
+            merged.append(structured_step)
+
+    for leftovers in remaining.values():
+        merged.extend(leftovers)
+    return merged
 
 
 def _infer_single_operation_from_text(text: str) -> str:
@@ -1413,7 +1471,7 @@ def _enrich_llm_steps_with_structured_data(
         data_change = {}
 
     add_target, add_change = _structured_add_payload(operation_target, data_change)
-    delete_labels = _structured_delete_labels(operation_target)
+    delete_labels = _structured_delete_labels(operation_target, data_change)
     change_steps = _structured_change_steps(operation_target, data_change, [])
     fallback_delete_idx = 0
     fallback_change_idx = 0
@@ -1540,7 +1598,7 @@ def _build_structured_steps(
     ordered_ops = _ordered_structured_ops("", operation_text)
     for op in ordered_ops:
         if op in {"del", "delete"}:
-            labels = _structured_delete_labels(operation_target)
+            labels = _structured_delete_labels(operation_target, data_change)
             if labels:
                 for idx, label in enumerate(labels):
                     steps.append(
@@ -1624,21 +1682,58 @@ def _pick_hint(op_to_hints: dict[str, list[str]], op: str, idx: int) -> str:
     return hints[-1]
 
 
-def _structured_delete_labels(operation_target: dict[str, Any]) -> list[str]:
-    candidates = (
-        operation_target.get("del_category"),
-        operation_target.get("del_categories"),
-        operation_target.get("category_name"),
-        operation_target.get("category_names"),
-    )
-    labels: list[str] = []
-    for value in candidates:
+def _first_non_empty_string(*values: Any) -> str:
+    for value in values:
         if isinstance(value, str) and value.strip():
-            labels.append(value.strip())
-        elif isinstance(value, list):
+            return value.strip()
+        if isinstance(value, list):
             for item in value:
                 if isinstance(item, str) and item.strip():
-                    labels.append(item.strip())
+                    return item.strip()
+    return ""
+
+
+def _append_unique_labels(labels: list[str], value: Any) -> None:
+    candidates: list[str] = []
+    if isinstance(value, str) and value.strip():
+        candidates = [value.strip()]
+    elif isinstance(value, list):
+        candidates = [str(item).strip() for item in value if isinstance(item, str) and item.strip()]
+    for item in candidates:
+        if item not in labels:
+            labels.append(item)
+
+
+def _structured_delete_labels(
+    operation_target: dict[str, Any],
+    data_change: dict[str, Any] | None = None,
+) -> list[str]:
+    labels: list[str] = []
+    del_change = data_change.get("del") if isinstance(data_change, dict) else None
+    candidates = [
+        operation_target.get("del_category"),
+        operation_target.get("del_categories"),
+    ]
+    if isinstance(del_change, dict):
+        candidates.extend(
+            [
+                del_change.get("category_name"),
+                del_change.get("category_names"),
+                del_change.get("category"),
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                operation_target.get("category_name"),
+                operation_target.get("category_names"),
+            ]
+        )
+    for value in candidates:
+        _append_unique_labels(labels, value)
+    if isinstance(del_change, dict):
+        for key in ("category_name", "category_names", "category"):
+            _append_unique_labels(labels, del_change.get(key))
     return labels
 
 
@@ -1648,11 +1743,13 @@ def _structured_add_payload(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     add_change = data_change.get("add") if isinstance(data_change.get("add"), dict) else data_change
     add_target: dict[str, Any] = {}
-    for key in ("add_category", "category_name"):
-        value = operation_target.get(key)
-        if isinstance(value, str) and value.strip():
-            add_target["category_name"] = value.strip()
-            break
+    label = _first_non_empty_string(
+        add_change.get("category_name") if isinstance(add_change, dict) else None,
+        operation_target.get("add_category"),
+        operation_target.get("category_name"),
+    )
+    if label:
+        add_target["category_name"] = label
     return add_target, add_change if isinstance(add_change, dict) else {}
 
 
@@ -1673,7 +1770,6 @@ def _structured_change_steps(
         label = str(change.get("category_name") or "").strip()
         step_target = {"category_name": label} if label else {}
         step_change = {
-            "mode": "multi_step",
             "changes": [change],
         }
         steps.append(
@@ -1770,7 +1866,7 @@ def _expand_composite_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]
             data_change = {}
 
         if operation == "delete":
-            labels = _structured_delete_labels(operation_target)
+            labels = _structured_delete_labels(operation_target, data_change)
             if len(labels) > 1:
                 for label in labels:
                     split_step = dict(step)
@@ -1785,14 +1881,14 @@ def _expand_composite_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]
                     split_step = dict(step)
                     label = str(change.get("category_name") or "").strip()
                     split_step["operation_target"] = {"category_name": label} if label else {}
-                    split_step["data_change"] = {"mode": "multi_step", "changes": [change]}
+                    split_step["data_change"] = {"changes": [change]}
                     expanded.append(split_step)
                 continue
             if len(atomic_changes) == 1:
                 split_step = dict(step)
                 label = str(atomic_changes[0].get("category_name") or "").strip()
                 split_step["operation_target"] = {"category_name": label} if label else operation_target
-                split_step["data_change"] = {"mode": "multi_step", "changes": atomic_changes}
+                split_step["data_change"] = {"changes": atomic_changes}
                 expanded.append(split_step)
                 continue
 
@@ -1801,7 +1897,13 @@ def _expand_composite_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def _points_from_data_change(data_change: dict[str, Any]) -> list[dict[str, float]]:
-    points = data_change.get("points") if isinstance(data_change, dict) else None
+    points = None
+    if isinstance(data_change, dict):
+        add_change = data_change.get("add")
+        if isinstance(add_change, dict):
+            points = add_change.get("points")
+        if points is None:
+            points = data_change.get("points")
     return _coerce_points(points if isinstance(points, list) else [])
 
 
@@ -1822,12 +1924,23 @@ def _extract_scatter_requested_color(
     if not isinstance(data_change, dict):
         data_change = {}
 
-    for key in ("point_color", "color", "fill", "rgb"):
-        value = data_change.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    color_sources: list[dict[str, Any]] = []
+    add_change = data_change.get("add")
+    if isinstance(add_change, dict):
+        color_sources.append(add_change)
+    color_sources.append(data_change)
 
-    points = data_change.get("points")
+    for source in color_sources:
+        for key in ("point_color", "color", "fill", "rgb"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    points = None
+    if isinstance(add_change, dict) and isinstance(add_change.get("points"), list):
+        points = add_change.get("points")
+    if points is None:
+        points = data_change.get("points")
     if isinstance(points, list):
         for item in points:
             if not isinstance(item, dict):
@@ -1836,7 +1949,6 @@ def _extract_scatter_requested_color(
                 value = item.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
-
     for key in ("point_color", "color", "fill"):
         value = operation_target.get(key)
         if isinstance(value, str) and value.strip():

@@ -85,11 +85,12 @@ def compare_svgs(predicted_svg: str | Path, ground_truth_svg: str | Path) -> dic
 
 def resolve_ground_truth_svg(case_dir: str | Path, case_id: str, payload: dict[str, Any]) -> Path | None:
     base = Path(case_dir)
-    operation = str((payload or {}).get("operation") or "").strip().lower()
+    data_change = (payload or {}).get("data_change")
+    has_delete = isinstance(data_change, dict) and isinstance(data_change.get("del"), dict)
     candidates: list[Path] = []
-    if operation == "delete":
+    if has_delete:
         candidates.append(base / f"{case_id}_del.svg")
-    if operation:
+    if isinstance(data_change, dict) and data_change:
         candidates.append(base / f"{case_id}_aug.svg")
     candidates.extend(
         [

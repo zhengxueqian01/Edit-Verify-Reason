@@ -42,8 +42,10 @@ class ScatterColorTests(unittest.TestCase):
             step={
                 "operation_target": {},
                 "data_change": {
-                    "points": [{"x": 1, "y": 2}],
-                    "color": "purple",
+                    "add": {
+                        "points": [{"x": 1, "y": 2}],
+                        "color": "purple",
+                    }
                 },
             },
             update_spec={"point_color": "blue"},
@@ -108,12 +110,16 @@ class ScatterColorTests(unittest.TestCase):
         self.assertEqual(chart_type, "scatter")
 
     def test_structured_delete_labels_supports_del_category(self) -> None:
-        labels = _structured_delete_labels({"del_category": "Loyalty Member Order"})
+        labels = _structured_delete_labels({"del_category": "Loyalty Member Order"}, {})
         self.assertEqual(labels, ["Loyalty Member Order"])
 
     def test_structured_delete_labels_supports_del_categories(self) -> None:
-        labels = _structured_delete_labels({"del_categories": ["A", "B"]})
+        labels = _structured_delete_labels({"del_categories": ["A", "B"]}, {})
         self.assertEqual(labels, ["A", "B"])
+
+    def test_structured_delete_labels_supports_data_change_del(self) -> None:
+        labels = _structured_delete_labels({}, {"del": {"category_name": "Loyalty Member Order"}})
+        self.assertEqual(labels, ["Loyalty Member Order"])
 
 
 if __name__ == "__main__":

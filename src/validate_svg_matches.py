@@ -109,16 +109,34 @@ def validate_one(pred_svg: Path, gt_svg: Path) -> dict[str, Any]:
 
 
 def _normalize_category_names(payload: dict[str, Any]) -> list[str]:
-    operation_target = payload.get("operation_target")
-    if not isinstance(operation_target, dict):
+    data_change = payload.get("data_change")
+    if not isinstance(data_change, dict):
         return []
-
-    raw = operation_target.get("category_name")
-    if isinstance(raw, str):
-        return [raw] if raw.strip() else []
-    if isinstance(raw, list):
-        return [str(item).strip() for item in raw if str(item).strip()]
-    return []
+    labels: list[str] = []
+    for key in ("add", "del"):
+        block = data_change.get(key)
+        if not isinstance(block, dict):
+            continue
+        raw = block.get("category_name") or block.get("category")
+        if isinstance(raw, str) and raw.strip():
+            labels.append(raw.strip())
+        elif isinstance(raw, list):
+            labels.extend(str(item).strip() for item in raw if str(item).strip())
+    change_block = data_change.get("change")
+    if isinstance(change_block, dict):
+        changes = change_block.get("changes")
+        if isinstance(changes, list):
+            for item in changes:
+                if not isinstance(item, dict):
+                    continue
+                raw = item.get("category_name") or item.get("category")
+                if isinstance(raw, str) and raw.strip():
+                    labels.append(raw.strip())
+    out: list[str] = []
+    for label in labels:
+        if label not in out:
+            out.append(label)
+    return out
 
 
 def _score_distribution(scores: list[float]) -> dict[str, int]:
@@ -223,9 +241,6 @@ def validate_batch(pred_root: Path, dataset_dir: Path, limit: int) -> dict[str, 
         payload_path = dataset_case_dir / f"{case_id}.json"
         payload = load_json(payload_path) if payload_path.exists() else {}
         category_names = _normalize_category_names(payload)
-        operation = str(payload.get("operation") or "").strip() or None
-        if operation:
-            item["operation"] = operation
         if category_names:
             item["category_names"] = category_names
         gt_svg = resolve_ground_truth_svg(dataset_case_dir, case_id, payload)
@@ -247,7 +262,6 @@ def validate_batch(pred_root: Path, dataset_dir: Path, limit: int) -> dict[str, 
                     "case": case_id,
                     "score": round(score, 4),
                     "chart_type": result.get("chart_type"),
-                    "operation": operation,
                     "category_names": category_names,
                     "predicted_svg_path": result.get("predicted_svg_path"),
                     "ground_truth_svg_path": result.get("ground_truth_svg_path"),

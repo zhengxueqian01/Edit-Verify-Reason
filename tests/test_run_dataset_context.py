@@ -29,9 +29,7 @@ class RunDatasetContextTests(unittest.TestCase):
         context = build_structured_update_context(
             {
                 "chart_type": "scatter",
-                "operation": "add",
-                "operation_target": {"add_category": "Echo Bowl"},
-                "data_change": {"add": {"values": [1, 2, 3]}},
+                "data_change": {"add": {"category_name": "Echo Bowl", "values": [1, 2, 3]}},
             },
             {
                 "eps": 5.0,
@@ -39,7 +37,7 @@ class RunDatasetContextTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(context["operation_target"]["add_category"], "Echo Bowl")
+        self.assertEqual(context["data_change"]["add"]["category_name"], "Echo Bowl")
         self.assertEqual(context["data_change"]["add"]["values"], [1, 2, 3])
         self.assertNotIn("task", context)
         self.assertNotIn("chart_type", context)

@@ -177,14 +177,15 @@ function formatPoints(points) {
 }
 
 function synthesizeInstruction(payload) {
-  const op = String(payload?.operation || "").toLowerCase();
-  const target = payload?.operation_target || {};
   const change = payload?.data_change || {};
   const chartType = String(payload?.chart_type || "").toLowerCase();
   const parts = [];
+  const addBlock = typeof change === "object" && change ? change.add : null;
+  const delBlock = typeof change === "object" && change ? change.del : null;
+  const changeBlock = typeof change === "object" && change ? change.change : null;
 
   if (chartType === "scatter") {
-    const points = change?.points;
+    const points = addBlock?.points || change?.points;
     if (Array.isArray(points) && points.length) {
       const pointsText = formatPoints(points);
       if (pointsText) {
@@ -193,8 +194,8 @@ function synthesizeInstruction(payload) {
     }
   }
 
-  if (op.includes("delete") || op.includes("del")) {
-    const names = target?.category_name || target?.del_category;
+  if (delBlock && typeof delBlock === "object") {
+    const names = delBlock?.category_name || delBlock?.category;
     if (Array.isArray(names) && names.length) {
       parts.push(`删除类别 ${names.map((n) => `\"${n}\"`).join(", ")}`);
     } else if (typeof names === "string" && names.trim()) {
@@ -202,21 +203,20 @@ function synthesizeInstruction(payload) {
     }
   }
 
-  const addBlock = typeof change === "object" && change ? change.add : null;
   const addBlocks = Array.isArray(addBlock)
     ? addBlock.filter((item) => item && typeof item === "object")
     : addBlock && typeof addBlock === "object"
       ? [addBlock]
       : [];
   if (addBlocks.length) {
-    const addName = target?.add_category;
-    const addNames = Array.isArray(addName) ? addName : [addName];
     for (const [idx, block] of addBlocks.entries()) {
       const values = block?.values;
       if (!Array.isArray(values) || !values.length) {
         continue;
       }
       const valuesText = values.join(", ");
+      const addName = block?.category_name;
+      const addNames = Array.isArray(addName) ? addName : [addName];
       const name = addNames[idx];
       if (typeof name === "string" && name.trim()) {
         parts.push(`新增系列 \"${name.trim()}\" : [${valuesText}]`);
@@ -226,11 +226,13 @@ function synthesizeInstruction(payload) {
     }
   }
 
-  const changeBlock = typeof change === "object" && change ? change.change : null;
   if (changeBlock && typeof changeBlock === "object") {
-    const changeName = target?.change_category;
-    const years = changeBlock?.years;
-    const values = changeBlock?.values;
+    const firstChange = Array.isArray(changeBlock?.changes) && changeBlock.changes[0] && typeof changeBlock.changes[0] === "object"
+      ? changeBlock.changes[0]
+      : {};
+    const changeName = firstChange?.category_name;
+    const years = firstChange?.years;
+    const values = firstChange?.values;
     const year = Array.isArray(years) && years.length ? years[0] : null;
     const value = Array.isArray(values) && values.length ? values[0] : null;
     if (year !== null && value !== null) {
@@ -259,7 +261,7 @@ function ensureScatterUpdateQuestion(question, payload) {
   if (hasPointPairs) {
     return text;
   }
-  const points = payload?.data_change?.points;
+  const points = payload?.data_change?.add?.points || payload?.data_change?.points;
   if (Array.isArray(points) && points.length) {
     const pointsText = formatPoints(points);
     if (pointsText) {

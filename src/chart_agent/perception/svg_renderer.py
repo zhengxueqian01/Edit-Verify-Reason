@@ -13,13 +13,15 @@ def default_output_paths(svg_path: str, chart_type: str) -> tuple[str, str]:
     case_id = m.group(1) if m else base
     category = chart_type
     operation = "update"
+    scope = _derive_output_scope(svg_path)
     meta = _load_case_meta(svg_path, case_id)
     if meta:
         category = str(meta.get("chart_type") or chart_type).strip() or chart_type
         raw_op = str(meta.get("operation") or "update").strip() or "update"
         operation = _normalize_operation(raw_op)
 
-    named = f"{case_id}_{_slug(category)}_{_slug(operation)}_updated"
+    prefix = f"{scope}_{case_id}" if scope else case_id
+    named = f"{prefix}_{_slug(category)}_{_slug(operation)}_updated"
     svg_out = os.path.join("output", chart_type, f"{named}.svg")
     png_out = os.path.join("output", chart_type, f"{named}.png")
     return svg_out, png_out
@@ -44,6 +46,19 @@ def _normalize_operation(raw: str) -> str:
     value = value.replace("+", "-")
     value = value.replace("_", "-")
     return re.sub(r"[^a-z0-9-]+", "-", value).strip("-") or "update"
+
+
+def _derive_output_scope(svg_path: str) -> str:
+    parts = [part for part in os.path.normpath(svg_path).split(os.sep) if part]
+    if not parts:
+        return ""
+    for marker in ("dataset", "dataset0313", "dataset03212"):
+        if marker in parts:
+            idx = parts.index(marker)
+            relevant = parts[idx + 1 : -2]
+            if relevant:
+                return _slug("_".join(relevant))
+    return ""
 
 
 def _slug(text: str) -> str:

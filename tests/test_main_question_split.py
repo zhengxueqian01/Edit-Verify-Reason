@@ -145,11 +145,11 @@ class MainQuestionSplitTests(unittest.TestCase):
             data_change,
             {
                 "add": {
-                    "mode": "full_series",
+                    "category_name": "Regional Carriers",
                     "years": ["2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024"],
                     "values": [128598.0, 186977.0, 205514.0, 136129.0, 226783.0, 246727.0, 170089.0, 154587.0, 195958.0, 176685.0],
                 },
-                "del": {"category": "Charter Flights"},
+                "del": {"category_name": "Charter Flights"},
             },
         )
         self.assertEqual(split_info["reason"], "llm_split_failed_fallback")
@@ -159,13 +159,13 @@ class MainQuestionSplitTests(unittest.TestCase):
 
         operation_text, qa_question, split_info, data_change = _resolve_questions(
             {
-                "question": (
-                    'After adding the category Regional Carriers and deleting the category Charter Flights, '
-                    'in which year does the overall maximum occur? '
-                    '"operation_target": { "add_category": "Regional Carriers", "del_category": "Charter Flights" }, '
-                    '"data_change": { "add": { "mode": "full_series", "years": [ "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024" ], '
+                    "question": (
+                        'After adding the category Regional Carriers and deleting the category Charter Flights, '
+                        'in which year does the overall maximum occur? '
+                    '"operation_target": { "category_name": "Regional Carriers" }, '
+                    '"data_change": { "add": { "category_name": "Regional Carriers", "years": [ "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024" ], '
                     '"values": [ 128598, 186977, 205514, 136129, 226783, 246727, 170089, 154587, 195958, 176685 ] }, '
-                    '"del": { "category": "Charter Flights" } },'
+                    '"del": { "category_name": "Charter Flights" } },'
                 )
             },
             llm,
@@ -173,12 +173,11 @@ class MainQuestionSplitTests(unittest.TestCase):
 
         self.assertIn("Add the category Regional Carriers", operation_text)
         self.assertIn("Delete the category Charter Flights", operation_text)
-        self.assertIn('"operation_target": { "add_category": "Regional Carriers", "del_category": "Charter Flights" }', operation_text)
-        self.assertIn('"data_change": { "add": { "mode": "full_series"', operation_text)
+        self.assertIn('"operation_target": { "category_name": "Regional Carriers" }', operation_text)
+        self.assertIn('"data_change": { "add": { "category_name": "Regional Carriers"', operation_text)
         self.assertEqual(qa_question, "in which year does the overall maximum occur?")
-        self.assertEqual(split_info["operation_target"]["add_category"], "Regional Carriers")
-        self.assertEqual(split_info["operation_target"]["del_category"], "Charter Flights")
-        self.assertEqual(data_change["del"]["category"], "Charter Flights")
+        self.assertEqual(split_info["operation_target"]["category_name"], "Regional Carriers")
+        self.assertEqual(data_change["del"]["category_name"], "Charter Flights")
 
     def test_second_stage_builds_add_and_delete_steps_from_operation_text(self) -> None:
         text = (
@@ -200,7 +199,7 @@ class MainQuestionSplitTests(unittest.TestCase):
                     "operation": "add",
                     "question_hint": "Add the Regional Carriers series.",
                     "operation_target": {"category_name": "Regional Carriers"},
-                    "data_change": {"mode": "full_series", "years": ["2015"], "values": [128598]},
+                    "data_change": {"category_name": "Regional Carriers", "years": ["2015"], "values": [128598]},
                     "new_points": [],
                 },
                 {
@@ -219,7 +218,7 @@ class MainQuestionSplitTests(unittest.TestCase):
         self.assertEqual([step["operation"] for step in steps], ["add", "delete"])
         self.assertEqual(steps[0]["operation_target"], {"category_name": "Regional Carriers"})
         self.assertEqual(steps[0]["question_hint"], "Add the Regional Carriers series.")
-        self.assertEqual(steps[0]["data_change"]["mode"], "full_series")
+        self.assertEqual(steps[0]["data_change"]["category_name"], "Regional Carriers")
         self.assertEqual(steps[0]["data_change"]["years"][0], "2015")
         self.assertEqual(steps[0]["data_change"]["values"][0], 128598.0)
         self.assertEqual(steps[1]["operation_target"], {"category_name": "Charter Flights"})
@@ -229,10 +228,10 @@ class MainQuestionSplitTests(unittest.TestCase):
         text = (
             'After adding the category Regional Carriers and deleting the category Charter Flights, '
             'in which year does the overall maximum occur? '
-            '"operation_target": { "add_category": "Regional Carriers", "del_category": "Charter Flights" }, '
-            '"data_change": { "add": { "mode": "full_series", "years": [ "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024" ], '
+            '"operation_target": { "category_name": "Regional Carriers" }, '
+            '"data_change": { "add": { "category_name": "Regional Carriers", "years": [ "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024" ], '
             '"values": [ 128598, 186977, 205514, 136129, 226783, 246727, 170089, 154587, 195958, 176685 ] }, '
-            '"del": { "category": "Charter Flights" } },'
+            '"del": { "category_name": "Charter Flights" } },'
         )
 
         operation_text, _qa_question, split_info, data_change = _resolve_questions({"question": text}, llm)
@@ -286,7 +285,7 @@ class MainQuestionSplitTests(unittest.TestCase):
             operation_text="Delete Oracle Labs and add Cinder Guild.",
             chart_type="line",
             perception={"chart_type": "line", "primitives_summary": {"num_lines": 5}, "mapping_info": {}},
-            structured_context={"operation_target": {"del_category": "Oracle Labs", "add_category": "Cinder Guild"}},
+            structured_context={"data_change": {"del": {"category_name": "Oracle Labs"}, "add": {"category_name": "Cinder Guild"}}},
             llm=llm,
             update_mode="llm_intent",
         )
@@ -379,7 +378,6 @@ class MainQuestionSplitTests(unittest.TestCase):
                     "question_hint": "Apply the listed value revisions.",
                     "operation_target": {"category_names": ["Alpha", "Beta"]},
                     "data_change": {
-                        "mode": "multi_step",
                         "changes": [
                             {"category_name": "Alpha", "years": ["2020"], "values": [11]},
                             {"category_name": "Beta", "years": ["2021", "2022"], "values": [12, 13]},
@@ -417,7 +415,6 @@ class MainQuestionSplitTests(unittest.TestCase):
                     "question_hint": "Apply the listed value revisions.",
                     "operation_target": {"category_name": "Alpha"},
                     "data_change": {
-                        "mode": "multi_step",
                         "changes": [
                             {
                                 "category": "Alpha",

@@ -75,14 +75,18 @@ def choose_qa(payload: dict[str, Any], qa_index: int) -> tuple[str, Any]:
 
 
 def synthesize_instruction(payload: dict[str, Any]) -> str:
-    op = str(payload.get("operation") or "").lower()
-    target = payload.get("operation_target") or {}
     change = payload.get("data_change") or {}
     chart_type = str(payload.get("chart_type") or "").lower()
     parts: list[str] = []
 
+    add_block = change.get("add") if isinstance(change, dict) else None
+    del_block = change.get("del") if isinstance(change, dict) else None
+    change_block = change.get("change") if isinstance(change, dict) else None
+
     if chart_type == "scatter":
-        points = change.get("points") if isinstance(change, dict) else None
+        points = add_block.get("points") if isinstance(add_block, dict) else None
+        if points is None and isinstance(change, dict):
+            points = change.get("points")
         if isinstance(points, list) and points:
             text_points: list[str] = []
             for p in points:
@@ -95,16 +99,15 @@ def synthesize_instruction(payload: dict[str, Any]) -> str:
             if text_points:
                 parts.append("Add points " + ", ".join(text_points))
 
-    if "delete" in op or "del" in op:
-        names = target.get("category_name") if isinstance(target, dict) else None
-        if not names and isinstance(target, dict):
-            names = target.get("del_category")
+    if isinstance(del_block, dict):
+        names = del_block.get("category_name") if isinstance(del_block, dict) else None
+        if not names and isinstance(del_block, dict):
+            names = del_block.get("category")
         if isinstance(names, list) and names:
             parts.append("Delete categories " + ", ".join(f"\"{n}\"" for n in names))
         elif isinstance(names, str) and names.strip():
             parts.append(f"Delete category \"{names.strip()}\"")
 
-    add_block = change.get("add") if isinstance(change, dict) else None
     if isinstance(add_block, dict):
         add_blocks = [add_block]
     elif isinstance(add_block, list):
@@ -112,24 +115,25 @@ def synthesize_instruction(payload: dict[str, Any]) -> str:
     else:
         add_blocks = []
     if add_blocks:
-        add_name = target.get("add_category") if isinstance(target, dict) else None
-        add_names = add_name if isinstance(add_name, list) else [add_name]
         for idx, block in enumerate(add_blocks):
             values = block.get("values")
             if not isinstance(values, list) or not values:
                 continue
             values_text = ", ".join(str(v) for v in values)
+            add_name = block.get("category_name")
+            add_names = add_name if isinstance(add_name, list) else [add_name]
             name = add_names[idx] if idx < len(add_names) else None
             if isinstance(name, str) and name.strip():
                 parts.append(f"Add series \"{name.strip()}\" : [{values_text}]")
             else:
                 parts.append(f"Add series: [{values_text}]")
 
-    change_block = change.get("change") if isinstance(change, dict) else None
     if isinstance(change_block, dict):
-        change_name = target.get("change_category") if isinstance(target, dict) else None
-        years = change_block.get("years")
-        values = change_block.get("values")
+        changes = change_block.get("changes")
+        first_change = changes[0] if isinstance(changes, list) and changes and isinstance(changes[0], dict) else {}
+        change_name = first_change.get("category_name")
+        years = first_change.get("years")
+        values = first_change.get("values")
         year = years[0] if isinstance(years, list) and years else None
         value = values[0] if isinstance(values, list) and values else None
         if year is not None and value is not None:
