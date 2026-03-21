@@ -26,6 +26,8 @@ def update_area_svg(
     output_path: str | None = None,
     svg_output_path: str | None = None,
     llm: Any | None = None,
+    operation_target: dict[str, Any] | None = None,
+    data_change: dict[str, Any] | None = None,
 ) -> str:
     add_specs = _extract_multi_add_series_specs(question)
     if len(add_specs) > 1:
@@ -40,6 +42,8 @@ def update_area_svg(
             output_path=output_path,
             svg_output_path=svg_output_path,
             llm=llm,
+            operation_target=operation_target,
+            data_change=data_change,
         )
 
     ops = _resolve_area_ops(question)
@@ -52,6 +56,8 @@ def update_area_svg(
             output_path=output_path,
             svg_output_path=svg_output_path,
             llm=llm,
+            operation_target=operation_target,
+            data_change=data_change,
         )
     op = ops[0] if ops else "add"
     if op == "delete":
@@ -62,6 +68,8 @@ def update_area_svg(
             output_path=output_path,
             svg_output_path=svg_output_path,
             llm=llm,
+            operation_target=operation_target,
+            data_change=data_change,
         )
     if op == "change":
         try:
@@ -72,6 +80,8 @@ def update_area_svg(
                 output_path=output_path,
                 svg_output_path=svg_output_path,
                 llm=llm,
+                operation_target=operation_target,
+                data_change=data_change,
             )
         except ValueError as exc:
             if "No valid area update request found in question." not in str(exc):
@@ -83,6 +93,8 @@ def update_area_svg(
         output_path=output_path,
         svg_output_path=svg_output_path,
         llm=llm,
+        operation_target=operation_target,
+        data_change=data_change,
     )
 
 
@@ -93,28 +105,23 @@ def _update_area_add_series(
     output_path: str | None = None,
     svg_output_path: str | None = None,
     llm: Any | None = None,
+    operation_target: dict[str, Any] | None = None,
+    data_change: dict[str, Any] | None = None,
 ) -> str:
-
-    top_boundary = mapping_info.get("area_top_boundary", [])
     y_ticks = mapping_info.get("y_ticks", [])
-    if not top_boundary or len(y_ticks) < 2:
+    if len(y_ticks) < 2:
         raise ValueError("Insufficient area mapping info.")
 
-    values, llm_meta = _parse_values(question, llm)
+    label, values = _extract_structured_add_payload(operation_target, data_change)
+    values = [float(value) for value in values]
+    values_llm_meta = None
+    if not values:
+        values, values_llm_meta = _parse_values(question, llm)
+    llm_meta = values_llm_meta
     if llm_meta:
         mapping_info["llm_meta"] = llm_meta
     if not values:
         raise ValueError("No new series values found in question.")
-
-    top_points = _ensure_sorted(top_boundary)
-    if len(values) != len(top_points):
-        values = _resample_values(values, len(top_points))
-
-    base_data = [_pixel_to_data(p[1], y_ticks) for p in top_points]
-    new_data = [base + val for base, val in zip(base_data, values)]
-    new_top = [(x, _data_to_pixel(y_val, y_ticks)) for (x, _), y_val in zip(top_points, new_data)]
-
-    polygon = new_top + list(reversed(top_points))
 
     with open(svg_path, "r", encoding="utf-8") as handle:
         content = handle.read()
@@ -125,12 +132,16 @@ def _update_area_add_series(
     if axes is None:
         raise ValueError("SVG axes group not found.")
 
-    fill = _choose_fill(mapping_info)
-    path_d = _format_path(polygon)
+    areas = _extract_area_groups(axes)
+    if not areas:
+        raise ValueError("No stacked area collections found in SVG.")
+    x_values, series_values = _area_series_values(areas, y_ticks)
+    if len(values) != len(x_values):
+        values = _resample_values(values, len(x_values))
 
+    fill = _choose_fill(mapping_info)
     update_group, update_path = _ensure_update_area_path(axes)
     clip_path = _extract_first_area_clip(axes)
-    update_path.set("d", path_d)
     update_path.set(
         "style",
         f"fill: {fill}; fill-opacity: 0.75; stroke: #000000; stroke-width: 0.5",
@@ -138,7 +149,25 @@ def _update_area_add_series(
     if clip_path:
         update_path.set("clip-path", clip_path)
 
-    label = _extract_series_label(question)
+    series_values.append(values)
+    cumulative = [0.0 for _ in x_values]
+    for idx, series_row in enumerate(series_values):
+        top_boundary = []
+        bottom_boundary = []
+        for x_val, base_val, delta in zip(x_values, cumulative, series_row):
+            bottom_data = base_val
+            top_data = base_val + delta
+            bottom_boundary.append((x_val, _data_to_pixel(bottom_data, y_ticks)))
+            top_boundary.append((x_val, _data_to_pixel(top_data, y_ticks)))
+        cumulative = [base + delta for base, delta in zip(cumulative, series_row)]
+        path_d = _format_path(top_boundary + list(reversed(bottom_boundary)))
+        if idx < len(areas):
+            areas[idx]["path"].set("d", path_d)
+        else:
+            update_path.set("d", path_d)
+
+    if not label:
+        label = _extract_series_label(question)
     if not label and llm is not None:
         label = _parse_label_with_llm(question, llm)
     if label:
@@ -198,6 +227,8 @@ def _run_area_ops_sequence(
     output_path: str | None,
     svg_output_path: str | None,
     llm: Any | None,
+    operation_target: dict[str, Any] | None,
+    data_change: dict[str, Any] | None,
 ) -> str:
     clauses = [c.strip() for c in re.split(r"[；;\n]+", question) if c.strip()]
     if not clauses:
@@ -232,6 +263,8 @@ def _run_area_ops_sequence(
                 output_path=step_png,
                 svg_output_path=step_svg,
                 llm=llm,
+                operation_target=operation_target,
+                data_change=data_change,
             )
         elif op == "change":
             _update_area_year_point(
@@ -241,6 +274,8 @@ def _run_area_ops_sequence(
                 output_path=step_png,
                 svg_output_path=step_svg,
                 llm=llm,
+                operation_target=operation_target,
+                data_change=data_change,
             )
         else:
             _update_area_add_series(
@@ -250,6 +285,8 @@ def _run_area_ops_sequence(
                 output_path=step_png,
                 svg_output_path=step_svg,
                 llm=llm,
+                operation_target=operation_target,
+                data_change=data_change,
             )
         current_svg = step_svg
 
@@ -303,6 +340,8 @@ def _update_area_remove_series(
     output_path: str | None,
     svg_output_path: str | None,
     llm: Any | None = None,
+    operation_target: dict[str, Any] | None = None,
+    data_change: dict[str, Any] | None = None,
 ) -> str:
     x_ticks = mapping_info.get("x_ticks", [])
     y_ticks = mapping_info.get("y_ticks", [])
@@ -337,6 +376,8 @@ def _update_area_remove_series(
             output_path=output_path,
             svg_output_path=svg_output_path,
             llm=llm,
+            operation_target=None,
+            data_change=None,
         )
     label = matched_labels[0]
 
@@ -399,6 +440,8 @@ def _update_area_year_point(
     output_path: str | None,
     svg_output_path: str | None,
     llm: Any | None,
+    operation_target: dict[str, Any] | None = None,
+    data_change: dict[str, Any] | None = None,
 ) -> str:
     x_ticks = mapping_info.get("x_ticks", [])
     y_ticks = mapping_info.get("y_ticks", [])
@@ -416,35 +459,29 @@ def _update_area_year_point(
 
     legend, legend_items = _extract_legend_items(root, content)
     labels = [item["label"] for item in legend_items if item.get("label")]
-    parsed = _parse_year_value_update(question, labels, llm)
-    if parsed is None:
-        raise ValueError("No valid area update request found in question.")
-    label, year_value, update_value, mode = parsed
-
-    target_fill = None
-    for item in legend_items:
-        if item.get("label") == label:
-            target_fill = item.get("fill")
-            break
-    if not target_fill:
-        raise ValueError("No matching legend color for selected series.")
+    structured_changes = _extract_structured_changes(data_change)
+    if not structured_changes:
+        parsed = _parse_year_value_update(question, labels, llm)
+        if parsed is None:
+            raise ValueError("No valid area update request found in question.")
+        structured_changes = [parsed]
 
     areas = _extract_area_groups(axes)
     if not areas:
         raise ValueError("No stacked area collections found in SVG.")
 
-    target_idx = _find_area_by_fill(areas, target_fill)
-    if target_idx is None:
-        raise ValueError("No stacked area series matches selected legend color.")
-
     x_values, series_values = _area_series_values(areas, y_ticks)
-    target_x = _data_to_pixel(year_value, x_ticks)
-    year_idx = min(range(len(x_values)), key=lambda i: abs(x_values[i] - target_x))
-    current_val = series_values[target_idx][year_idx]
-    new_val = current_val + update_value if mode == "relative" else update_value
-    if new_val < 0:
-        new_val = 0.0
-    series_values[target_idx][year_idx] = new_val
+    for label, year_value, update_value, mode in structured_changes:
+        target_idx = _find_area_index(label, legend_items, areas)
+        if target_idx is None:
+            raise ValueError("No stacked area series matches selected legend item.")
+        target_x = _data_to_pixel(year_value, x_ticks)
+        year_idx = min(range(len(x_values)), key=lambda i: abs(x_values[i] - target_x))
+        current_val = series_values[target_idx][year_idx]
+        new_val = current_val + update_value if mode == "relative" else update_value
+        if new_val < 0:
+            new_val = 0.0
+        series_values[target_idx][year_idx] = new_val
 
     cumulative = [0.0 for _ in x_values]
     for idx, area in enumerate(areas):
@@ -1113,6 +1150,73 @@ def _find_area_by_fill(areas: list[dict[str, Any]], fill: str) -> int | None:
         if area.get("fill") == fill_norm:
             return idx
     return None
+
+
+def _find_area_index(
+    label: str,
+    legend_items: list[dict[str, Any]],
+    areas: list[dict[str, Any]],
+) -> int | None:
+    for item in legend_items:
+        if str(item.get("label") or "").strip() != label:
+            continue
+        fill = str(item.get("fill") or "").strip()
+        if fill:
+            return _find_area_by_fill(areas, fill)
+    return None
+
+
+def _extract_structured_add_payload(
+    operation_target: dict[str, Any] | None,
+    data_change: dict[str, Any] | None,
+) -> tuple[str, list[float]]:
+    payload = data_change if isinstance(data_change, dict) else {}
+    add_block = payload.get("add") if isinstance(payload.get("add"), dict) else payload
+    if not isinstance(add_block, dict):
+        return "", []
+    label = str(
+        add_block.get("category_name")
+        or add_block.get("category")
+        or (operation_target or {}).get("category_name")
+        or ""
+    ).strip()
+    raw_values = add_block.get("values")
+    if not isinstance(raw_values, list):
+        return label, []
+    values: list[float] = []
+    for value in raw_values:
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return label, values
+
+
+def _extract_structured_changes(
+    data_change: dict[str, Any] | None,
+) -> list[tuple[str, float, float, str]]:
+    payload = data_change if isinstance(data_change, dict) else {}
+    root = payload.get("change") if isinstance(payload.get("change"), dict) else payload
+    if not isinstance(root, dict):
+        return []
+    changes = root.get("changes")
+    if not isinstance(changes, list):
+        return []
+    out: list[tuple[str, float, float, str]] = []
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        label = str(change.get("category_name") or change.get("category") or "").strip()
+        years = change.get("years")
+        values = change.get("values")
+        if not label or not isinstance(years, list) or not isinstance(values, list):
+            continue
+        for year, value in zip(years, values):
+            try:
+                out.append((label, float(year), float(value), "absolute"))
+            except (TypeError, ValueError):
+                continue
+    return out
 
 
 def _area_series_values(

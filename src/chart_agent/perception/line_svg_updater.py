@@ -30,6 +30,8 @@ def update_line_svg(
     output_path: str | None = None,
     svg_output_path: str | None = None,
     llm: Any | None = None,
+    operation_target: dict[str, Any] | None = None,
+    data_change: dict[str, Any] | None = None,
 ) -> str:
     ops = _resolve_line_ops(question)
     if len(ops) > 1:
@@ -41,6 +43,8 @@ def update_line_svg(
             output_path=output_path,
             svg_output_path=svg_output_path,
             llm=llm,
+            operation_target=operation_target,
+            data_change=data_change,
         )
     op = ops[0] if ops else "add"
     if op == "delete":
@@ -51,6 +55,8 @@ def update_line_svg(
             output_path=output_path,
             svg_output_path=svg_output_path,
             llm=llm,
+            operation_target=operation_target,
+            data_change=data_change,
         )
     if op == "change":
         try:
@@ -61,6 +67,8 @@ def update_line_svg(
                 output_path=output_path,
                 svg_output_path=svg_output_path,
                 llm=llm,
+                operation_target=operation_target,
+                data_change=data_change,
             )
         except ValueError as exc:
             if "No valid line update request found in question." not in str(exc):
@@ -72,6 +80,8 @@ def update_line_svg(
         output_path=output_path,
         svg_output_path=svg_output_path,
         llm=llm,
+        operation_target=operation_target,
+        data_change=data_change,
     )
 
 
@@ -82,6 +92,8 @@ def _add_line_series(
     output_path: str | None = None,
     svg_output_path: str | None = None,
     llm: Any | None = None,
+    operation_target: dict[str, Any] | None = None,
+    data_change: dict[str, Any] | None = None,
 ) -> str:
 
     x_ticks = mapping_info.get("x_ticks", [])
@@ -129,7 +141,13 @@ def _add_line_series(
     line_path.set("d", _format_path(points_svg))
     _draw_line_markers(axes, points_svg, stroke, enabled=use_markers)
 
-    label = _extract_series_label(question)
+    label = str((operation_target or {}).get("category_name") or "").strip()
+    if not label and isinstance(data_change, dict):
+        add_block = data_change.get("add") if isinstance(data_change.get("add"), dict) else data_change
+        if isinstance(add_block, dict):
+            label = str(add_block.get("category_name") or add_block.get("category") or "").strip()
+    if not label:
+        label = _extract_series_label(question)
     if not label and llm is not None:
         label = _parse_label_with_llm(question, llm)
     if label:
@@ -189,6 +207,8 @@ def _run_line_ops_sequence(
     output_path: str | None,
     svg_output_path: str | None,
     llm: Any | None,
+    operation_target: dict[str, Any] | None,
+    data_change: dict[str, Any] | None,
 ) -> str:
     clauses = [c.strip() for c in re.split(r"[；;\n]+", question) if c.strip()]
     if not clauses:
@@ -223,6 +243,8 @@ def _run_line_ops_sequence(
                 output_path=step_png,
                 svg_output_path=step_svg,
                 llm=llm,
+                operation_target=operation_target,
+                data_change=data_change,
             )
         elif op == "change":
             _update_line_point(
@@ -232,6 +254,8 @@ def _run_line_ops_sequence(
                 output_path=step_png,
                 svg_output_path=step_svg,
                 llm=llm,
+                operation_target=operation_target,
+                data_change=data_change,
             )
         else:
             _add_line_series(
@@ -241,6 +265,8 @@ def _run_line_ops_sequence(
                 output_path=step_png,
                 svg_output_path=step_svg,
                 llm=llm,
+                operation_target=operation_target,
+                data_change=data_change,
             )
         current_svg = step_svg
 
@@ -368,6 +394,8 @@ def _update_line_point(
     output_path: str | None,
     svg_output_path: str | None,
     llm: Any | None,
+    operation_target: dict[str, Any] | None = None,
+    data_change: dict[str, Any] | None = None,
 ) -> str:
     x_ticks = mapping_info.get("x_ticks", [])
     y_ticks = mapping_info.get("y_ticks", [])
@@ -385,38 +413,41 @@ def _update_line_point(
 
     legend, legend_items = _extract_legend_items(root, content)
     labels = [item["label"] for item in legend_items if item.get("label")]
-    parsed = _parse_year_value_update(question, labels, llm)
-    if parsed is None:
-        raise ValueError("No valid line update request found in question.")
-    label, year_value, update_value, mode = parsed
+    structured_changes = _extract_structured_line_changes(data_change)
+    if not structured_changes:
+        parsed = _parse_year_value_update(question, labels, llm)
+        if parsed is None:
+            raise ValueError("No valid line update request found in question.")
+        structured_changes = [parsed]
 
-    target_stroke = None
-    for item in legend_items:
-        if item.get("label") == label:
-            target_stroke = item.get("stroke")
-            break
-    if not target_stroke:
-        raise ValueError("No matching legend color for selected series.")
+    for label, year_value, update_value, mode in structured_changes:
+        target_stroke = None
+        for item in legend_items:
+            if item.get("label") == label:
+                target_stroke = item.get("stroke")
+                break
+        if not target_stroke:
+            raise ValueError("No matching legend color for selected series.")
 
-    line_group = _find_line_by_stroke(axes, target_stroke)
-    if line_group is None:
-        raise ValueError("No line series matches selected legend color.")
-    line_path = line_group.find(f'./{{{SVG_NS}}}path')
-    if line_path is None:
-        raise ValueError("Line path not found for selected series.")
+        line_group = _find_line_by_stroke(axes, target_stroke)
+        if line_group is None:
+            raise ValueError("No line series matches selected legend color.")
+        line_path = line_group.find(f'./{{{SVG_NS}}}path')
+        if line_path is None:
+            raise ValueError("Line path not found for selected series.")
 
-    points = _extract_path_points(line_path.get("d", ""))
-    if not points:
-        raise ValueError("Line path contains no points.")
+        points = _extract_path_points(line_path.get("d", ""))
+        if not points:
+            raise ValueError("Line path contains no points.")
 
-    target_x = _data_to_pixel(year_value, x_ticks)
-    idx = min(range(len(points)), key=lambda i: abs(points[i][0] - target_x))
-    current_data = _pixel_to_data(points[idx][1], y_ticks)
-    new_data = current_data + update_value if mode == "relative" else update_value
-    new_y = _data_to_pixel(new_data, y_ticks)
-    points[idx] = (points[idx][0], new_y)
-    line_path.set("d", _format_path(points))
-    _update_marker_positions(line_group, points[idx][0], new_y)
+        target_x = _data_to_pixel(year_value, x_ticks)
+        idx = min(range(len(points)), key=lambda i: abs(points[i][0] - target_x))
+        current_data = _pixel_to_data(points[idx][1], y_ticks)
+        new_data = current_data + update_value if mode == "relative" else update_value
+        new_y = _data_to_pixel(new_data, y_ticks)
+        points[idx] = (points[idx][0], new_y)
+        line_path.set("d", _format_path(points))
+        _update_marker_positions(line_group, points[idx][0], new_y)
 
     svg_out, png_out = default_output_paths(svg_path, "line")
     target_svg = svg_output_path or svg_out
@@ -492,6 +523,8 @@ def _remove_line_series(
     output_path: str | None,
     svg_output_path: str | None,
     llm: Any | None = None,
+    operation_target: dict[str, Any] | None = None,
+    data_change: dict[str, Any] | None = None,
 ) -> str:
     with open(svg_path, "r", encoding="utf-8") as handle:
         content = handle.read()
@@ -504,7 +537,9 @@ def _remove_line_series(
 
     legend, legend_items = _extract_legend_items(root, content)
     labels = [item["label"] for item in legend_items if item.get("label")]
-    labels_to_remove = _resolve_delete_labels(question, labels, llm)
+    labels_to_remove = _extract_structured_line_delete_labels(operation_target, data_change)
+    if not labels_to_remove:
+        labels_to_remove = _resolve_delete_labels(question, labels, llm)
     if not labels_to_remove:
         raise ValueError("No matching line series found in question.")
 
@@ -615,6 +650,64 @@ def _resolve_delete_labels(question: str, labels: list[str], llm: Any | None) ->
     if labels_to_remove:
         return labels_to_remove
     return _match_labels(question, labels)
+
+
+def _extract_structured_line_delete_labels(
+    operation_target: dict[str, Any] | None,
+    data_change: dict[str, Any] | None,
+) -> list[str]:
+    labels: list[str] = []
+    candidates: list[Any] = []
+    if isinstance(operation_target, dict):
+        candidates.append(operation_target.get("category_name"))
+    if isinstance(data_change, dict):
+        del_block = data_change.get("del")
+        if isinstance(del_block, dict):
+            candidates.extend(
+                [
+                    del_block.get("category_name"),
+                    del_block.get("category_names"),
+                    del_block.get("category"),
+                ]
+            )
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            text = candidate.strip()
+            if text and text not in labels:
+                labels.append(text)
+        elif isinstance(candidate, list):
+            for item in candidate:
+                text = str(item).strip()
+                if text and text not in labels:
+                    labels.append(text)
+    return labels
+
+
+def _extract_structured_line_changes(
+    data_change: dict[str, Any] | None,
+) -> list[tuple[str, float, float, str]]:
+    payload = data_change if isinstance(data_change, dict) else {}
+    root = payload.get("change") if isinstance(payload.get("change"), dict) else payload
+    if not isinstance(root, dict):
+        return []
+    changes = root.get("changes")
+    if not isinstance(changes, list):
+        return []
+    out: list[tuple[str, float, float, str]] = []
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        label = str(change.get("category_name") or change.get("category") or "").strip()
+        years = change.get("years")
+        values = change.get("values")
+        if not label or not isinstance(years, list) or not isinstance(values, list):
+            continue
+        for year, value in zip(years, values):
+            try:
+                out.append((label, float(year), float(value), "absolute"))
+            except (TypeError, ValueError):
+                continue
+    return out
 
 
 def _parse_year_value_update(

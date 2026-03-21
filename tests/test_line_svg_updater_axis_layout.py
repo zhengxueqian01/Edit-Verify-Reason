@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from chart_agent.perception.line_svg_updater import (
     _compute_draw_style_y_limits,
@@ -11,11 +14,19 @@ from chart_agent.perception.line_svg_updater import (
     _append_legend_item,
     _pick_unused_line_stroke,
     _resolve_delete_labels,
+    _update_line_point,
+    update_line_svg,
 )
 import xml.etree.ElementTree as ET
 
 
 class LineSvgAxisLayoutTests(unittest.TestCase):
+    def _write_temp_svg(self, content: str) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        tmpdir = tempfile.TemporaryDirectory()
+        path = Path(tmpdir.name) / "case.svg"
+        path.write_text(content, encoding="utf-8")
+        return tmpdir, path
+
     def test_resolve_delete_labels_falls_back_when_llm_returns_empty(self) -> None:
         class EmptyLLM:
             def invoke(self, prompt: str) -> object:
@@ -172,6 +183,57 @@ class LineSvgAxisLayoutTests(unittest.TestCase):
         self.assertEqual(style["stroke_width"], 2.0)
         self.assertEqual(style["stroke_linecap"], "square")
         self.assertFalse(style["has_markers"])
+
+    def test_update_line_point_applies_structured_multi_change(self) -> None:
+        content = """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="axes_1">
+                <g id="line2d_1">
+                  <path d="M 0 90 L 10 80" style="fill: none; stroke: #111111; stroke-width: 2" />
+                </g>
+                <g id="line2d_2">
+                  <path d="M 0 85 L 10 75" style="fill: none; stroke: #222222; stroke-width: 2" />
+                </g>
+              </g>
+              <g id="legend_1">
+                <g id="line_1"><path d="M 0 0 L 5 0" style="fill: none; stroke: #111111; stroke-width: 2" /></g>
+                <g id="text_1"><!-- A --><g transform="translate(30 20) scale(0.1 -0.1)"></g></g>
+                <g id="line_2"><path d="M 0 14 L 5 14" style="fill: none; stroke: #222222; stroke-width: 2" /></g>
+                <g id="text_2"><!-- B --><g transform="translate(30 34) scale(0.1 -0.1)"></g></g>
+              </g>
+            </svg>
+        """
+        tmpdir, svg_path = self._write_temp_svg(content)
+        out_svg = Path(tmpdir.name) / "out.svg"
+        out_png = Path(tmpdir.name) / "out.png"
+        mapping_info = {
+            "x_ticks": [(0.0, 0.0), (10.0, 10.0)],
+            "y_ticks": [(100.0, 0.0), (0.0, 100.0)],
+        }
+
+        with patch("chart_agent.perception.line_svg_updater.render_svg_to_png", return_value=str(out_png)):
+            _update_line_point(
+                str(svg_path),
+                'Change "A" in 0 to 15; Change "B" in 10 to 30',
+                mapping_info,
+                output_path=str(out_png),
+                svg_output_path=str(out_svg),
+                llm=None,
+                data_change={
+                    "change": {
+                        "changes": [
+                            {"category_name": "A", "years": [0], "values": [15]},
+                            {"category_name": "B", "years": [10], "values": [30]},
+                        ]
+                    }
+                },
+            )
+
+        text = out_svg.read_text(encoding="utf-8")
+        self.assertIn('d="M 0.000000 85.000000 L 10.000000 80.000000"', text)
+        self.assertIn('d="M 0.000000 85.000000 L 10.000000 70.000000"', text)
+
+        tmpdir.cleanup()
 
 
 if __name__ == "__main__":

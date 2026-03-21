@@ -2133,6 +2133,8 @@ def _execute_planned_steps(
                 output_path=step_png,
                 svg_output_path=step_svg,
                 llm=llm,
+                operation_target=step.get("operation_target"),
+                data_change=step.get("data_change"),
             )
         elif chart_type == "area":
             output_image = update_area_svg(
@@ -2142,6 +2144,8 @@ def _execute_planned_steps(
                 output_path=step_png,
                 svg_output_path=step_svg,
                 llm=llm,
+                operation_target=step.get("operation_target"),
+                data_change=step.get("data_change"),
             )
         else:
             raise ValueError(f"unsupported chart type: {chart_type}")

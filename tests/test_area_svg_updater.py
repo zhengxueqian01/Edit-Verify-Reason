@@ -1,17 +1,29 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
+from pathlib import Path
+from unittest.mock import patch
 
 from chart_agent.perception.area_svg_updater import (
     SVG_NS,
     _extract_area_groups,
     _extract_multi_add_series_specs,
     _resolve_area_ops,
+    _update_area_remove_series,
+    _update_area_year_point,
+    update_area_svg,
 )
 
 
 class AreaSvgUpdaterTests(unittest.TestCase):
+    def _write_temp_svg(self, content: str) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        tmpdir = tempfile.TemporaryDirectory()
+        path = Path(tmpdir.name) / "case.svg"
+        path.write_text(content, encoding="utf-8")
+        return tmpdir, path
+
     def test_extract_area_groups_keeps_document_order_for_update_group(self) -> None:
         axes = ET.fromstring(
             f"""
@@ -59,6 +71,154 @@ class AreaSvgUpdaterTests(unittest.TestCase):
         ops = _resolve_area_ops(question)
 
         self.assertEqual(ops, ["change", "change"])
+
+    def test_update_area_add_series_rebuilds_from_svg_not_mapping_top_boundary(self) -> None:
+        content = f"""
+        <svg xmlns="{SVG_NS}">
+          <g id="axes_1">
+            <g id="FillBetweenPolyCollection_1">
+              <path d="M 0 90 L 10 80 L 10 100 L 0 100 Z" style="fill: #111111" />
+            </g>
+            <g id="FillBetweenPolyCollection_2">
+              <path d="M 0 85 L 10 75 L 10 80 L 0 90 Z" style="fill: #222222" />
+            </g>
+          </g>
+          <g id="legend_1">
+            <g id="patch_1"><path d="M 0 0 L 5 0 L 5 5 L 0 5 z" style="fill: #111111" /></g>
+            <g id="text_1"><!-- Alpha --><g transform="translate(30 20) scale(0.1 -0.1)"></g></g>
+            <g id="patch_2"><path d="M 0 14 L 5 14 L 5 19 L 0 19 z" style="fill: #222222" /></g>
+            <g id="text_2"><!-- Beta --><g transform="translate(30 34) scale(0.1 -0.1)"></g></g>
+          </g>
+        </svg>
+        """
+        tmpdir, svg_path = self._write_temp_svg(content)
+        out_svg = Path(tmpdir.name) / "out.svg"
+        out_png = Path(tmpdir.name) / "out.png"
+        mapping_info = {
+            "top_boundary": [(0.0, 40.0), (10.0, 35.0)],
+            "y_ticks": [(100.0, 0.0), (0.0, 100.0)],
+        }
+
+        with patch("chart_agent.perception.area_svg_updater.render_svg_to_png", return_value=str(out_png)):
+            update_area_svg(
+                str(svg_path),
+                'Add the category/series "C"',
+                mapping_info,
+                output_path=str(out_png),
+                svg_output_path=str(out_svg),
+                operation_target={"category_name": "C"},
+                data_change={"add": {"category_name": "C", "values": [2, 3]}},
+            )
+
+        root = ET.parse(out_svg).getroot()
+        axes = root.find(f'.//{{{SVG_NS}}}g[@id="axes_1"]')
+        assert axes is not None
+        groups = _extract_area_groups(axes)
+        self.assertEqual(len(groups), 3)
+        update_d = groups[-1]["path"].get("d", "")
+        self.assertIn("0.000000 83.000000", update_d)
+        self.assertIn("10.000000 72.000000", update_d)
+
+        tmpdir.cleanup()
+
+    def test_update_area_remove_series_uses_legend_fill_mapping(self) -> None:
+        content = f"""
+        <svg xmlns="{SVG_NS}">
+          <g id="axes_1">
+            <g id="FillBetweenPolyCollection_1">
+              <path d="M 0 90 L 10 80 L 10 100 L 0 100 Z" style="fill: #111111" />
+            </g>
+            <g id="FillBetweenPolyCollection_2">
+              <path d="M 0 85 L 10 75 L 10 80 L 0 90 Z" style="fill: #222222" />
+            </g>
+            <g id="FillBetweenPolyCollection_3">
+              <path d="M 0 80 L 10 70 L 10 75 L 0 85 Z" style="fill: #333333" />
+            </g>
+          </g>
+          <g id="legend_1">
+            <g id="patch_1"><path d="M 0 0 L 5 0 L 5 5 L 0 5 z" style="fill: #111111" /></g>
+            <g id="text_1"><!-- Alpha --><g transform="translate(30 20) scale(0.1 -0.1)"></g></g>
+            <g id="patch_2"><path d="M 0 14 L 5 14 L 5 19 L 0 19 z" style="fill: #333333" /></g>
+            <g id="text_2"><!-- Beta --><g transform="translate(30 34) scale(0.1 -0.1)"></g></g>
+            <g id="patch_3"><path d="M 0 28 L 5 28 L 5 33 L 0 33 z" style="fill: #222222" /></g>
+            <g id="text_3"><!-- Gamma --><g transform="translate(30 48) scale(0.1 -0.1)"></g></g>
+          </g>
+        </svg>
+        """
+        tmpdir, svg_path = self._write_temp_svg(content)
+        out_svg = Path(tmpdir.name) / "out.svg"
+        out_png = Path(tmpdir.name) / "out.png"
+        mapping_info = {
+            "x_ticks": [(0.0, 0.0), (10.0, 10.0)],
+            "y_ticks": [(100.0, 0.0), (0.0, 100.0)],
+        }
+
+        with patch("chart_agent.perception.area_svg_updater.render_svg_to_png", return_value=str(out_png)):
+            _update_area_remove_series(
+                str(svg_path),
+                'Delete the category/series "Beta"',
+                mapping_info,
+                output_path=str(out_png),
+                svg_output_path=str(out_svg),
+            )
+
+        text = out_svg.read_text(encoding="utf-8")
+        self.assertIn("<!-- Alpha -->", text)
+        self.assertNotIn("<!-- Beta -->", text)
+        self.assertIn("<!-- Gamma -->", text)
+
+        tmpdir.cleanup()
+
+    def test_update_area_change_applies_structured_multi_change(self) -> None:
+        content = f"""
+        <svg xmlns="{SVG_NS}">
+          <g id="axes_1">
+            <g id="FillBetweenPolyCollection_1">
+              <path d="M 0 90 L 10 80 L 10 100 L 0 100 Z" style="fill: #111111" />
+            </g>
+            <g id="FillBetweenPolyCollection_2">
+              <path d="M 0 85 L 10 75 L 10 80 L 0 90 Z" style="fill: #222222" />
+            </g>
+          </g>
+          <g id="legend_1">
+            <g id="patch_1"><path d="M 0 0 L 5 0 L 5 5 L 0 5 z" style="fill: #111111" /></g>
+            <g id="text_1"><!-- A --><g transform="translate(30 20) scale(0.1 -0.1)"></g></g>
+            <g id="patch_2"><path d="M 0 14 L 5 14 L 5 19 L 0 19 z" style="fill: #222222" /></g>
+            <g id="text_2"><!-- B --><g transform="translate(30 34) scale(0.1 -0.1)"></g></g>
+          </g>
+        </svg>
+        """
+        tmpdir, svg_path = self._write_temp_svg(content)
+        out_svg = Path(tmpdir.name) / "out.svg"
+        out_png = Path(tmpdir.name) / "out.png"
+        mapping_info = {
+            "x_ticks": [(0.0, 0.0), (10.0, 10.0)],
+            "y_ticks": [(100.0, 0.0), (0.0, 100.0)],
+        }
+
+        with patch("chart_agent.perception.area_svg_updater.render_svg_to_png", return_value=str(out_png)):
+            _update_area_year_point(
+                str(svg_path),
+                'Change "A" in 0 to 15; Change "B" in 10 to 8',
+                mapping_info,
+                output_path=str(out_png),
+                svg_output_path=str(out_svg),
+                llm=None,
+                data_change={
+                    "change": {
+                        "changes": [
+                            {"category_name": "A", "years": [0], "values": [15]},
+                            {"category_name": "B", "years": [10], "values": [8]},
+                        ]
+                    }
+                },
+            )
+
+        text = out_svg.read_text(encoding="utf-8")
+        self.assertIn("0.000000 85.000000", text)
+        self.assertIn("10.000000 72.000000", text)
+
+        tmpdir.cleanup()
 
 
 if __name__ == "__main__":
