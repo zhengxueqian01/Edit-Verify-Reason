@@ -1401,7 +1401,8 @@ def _step_match_key(step: dict[str, Any]) -> tuple[str, str, str]:
         label = _first_non_empty_string(target.get("category_name"), target.get("category_names"))
     marker = ""
     if operation == "change" and isinstance(data_change, dict):
-        changes = data_change.get("changes")
+        change_root = data_change.get("change") if isinstance(data_change.get("change"), dict) else data_change
+        changes = change_root.get("changes") if isinstance(change_root, dict) else None
         if isinstance(changes, list) and changes and isinstance(changes[0], dict):
             years = changes[0].get("years")
             if isinstance(years, list) and years:
@@ -1508,17 +1509,39 @@ def _enrich_llm_steps_with_structured_data(
             fallback_delete_idx += 1
         elif op == "change":
             if fallback_change_idx < len(change_steps):
-                fallback_change = change_steps[fallback_change_idx]
-                step["operation_target"] = _merge_dict_like(
-                    fallback_change.get("operation_target"),
-                    step["operation_target"],
-                )
-                if fallback_change.get("data_change"):
-                    step["data_change"] = _merge_dict_like(
-                        fallback_change.get("data_change"),
-                        step["data_change"],
+                if not step_change:
+                    remaining_changes: list[dict[str, Any]] = []
+                    for change_step in change_steps[fallback_change_idx:]:
+                        change_payload = change_step.get("data_change")
+                        if not isinstance(change_payload, dict):
+                            continue
+                        changes = change_payload.get("changes")
+                        if isinstance(changes, list):
+                            remaining_changes.extend(change for change in changes if isinstance(change, dict))
+                    if remaining_changes:
+                        first_label = str(remaining_changes[0].get("category_name") or "").strip()
+                        if first_label:
+                            step["operation_target"] = _merge_dict_like(
+                                {"category_name": first_label},
+                                step["operation_target"],
+                            )
+                        step["data_change"] = _merge_dict_like(
+                            {"changes": remaining_changes},
+                            step["data_change"],
+                        )
+                    fallback_change_idx = len(change_steps)
+                else:
+                    fallback_change = change_steps[fallback_change_idx]
+                    step["operation_target"] = _merge_dict_like(
+                        fallback_change.get("operation_target"),
+                        step["operation_target"],
                     )
-            fallback_change_idx += 1
+                    if fallback_change.get("data_change"):
+                        step["data_change"] = _merge_dict_like(
+                            fallback_change.get("data_change"),
+                            step["data_change"],
+                        )
+                    fallback_change_idx += 1
 
         enriched.append(step)
 
@@ -1875,7 +1898,8 @@ def _expand_composite_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]
                 continue
 
         if operation == "change":
-            atomic_changes = _flatten_atomic_changes(data_change.get("changes"))
+            change_root = data_change.get("change") if isinstance(data_change.get("change"), dict) else data_change
+            atomic_changes = _flatten_atomic_changes(change_root.get("changes") if isinstance(change_root, dict) else None)
             if len(atomic_changes) > 1:
                 for change in atomic_changes:
                     split_step = dict(step)

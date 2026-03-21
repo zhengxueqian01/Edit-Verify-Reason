@@ -406,6 +406,126 @@ class MainQuestionSplitTests(unittest.TestCase):
             ["2020", "2021", "2022"],
         )
 
+    def test_operation_steps_expand_structured_changes_when_llm_has_single_change_step(self) -> None:
+        plan = {
+            "normalized_question": "Add Ironclad Ventures and apply the listed value revisions.",
+            "steps": [
+                {
+                    "operation": "add",
+                    "question_hint": "Insert a new area-series/category with the provided year-value pairs.",
+                    "operation_target": {"category_name": "Ironclad Ventures"},
+                    "data_change": {
+                        "add": {
+                            "category_name": "Ironclad Ventures",
+                            "years": ["2015", "2016"],
+                            "values": [11.86, 11.24],
+                        }
+                    },
+                    "new_points": [],
+                },
+                {
+                    "operation": "change",
+                    "question_hint": "Revise the specified category-year values to the provided numbers.",
+                    "operation_target": {},
+                    "data_change": {},
+                    "new_points": [],
+                },
+            ],
+            "new_points": [],
+            "llm_success": True,
+        }
+        structured_context = {
+            "operation_target": {},
+            "data_change": {
+                "add": {
+                    "category_name": "Ironclad Ventures",
+                    "years": ["2015", "2016"],
+                    "values": [11.86, 11.24],
+                },
+                "change": {
+                    "changes": [
+                        {
+                            "category_name": "Horizon Enterprises",
+                            "years": ["2023", "2024"],
+                            "values": [12.78, 14.41],
+                        },
+                        {
+                            "category_name": "Aegis Corp",
+                            "years": ["2020"],
+                            "values": [15.35],
+                        },
+                    ]
+                },
+            },
+        }
+
+        steps = _operation_steps_from_plan(
+            plan,
+            "Add Ironclad Ventures and apply the listed value revisions.",
+            structured_context,
+        )
+
+        self.assertEqual([step["operation"] for step in steps], ["add", "change", "change", "change"])
+        self.assertEqual(
+            [step["operation_target"] for step in steps[1:]],
+            [
+                {"category_name": "Horizon Enterprises"},
+                {"category_name": "Horizon Enterprises"},
+                {"category_name": "Aegis Corp"},
+            ],
+        )
+        self.assertEqual(
+            [(step["data_change"]["changes"][0]["category_name"], step["data_change"]["changes"][0]["years"][0]) for step in steps[1:]],
+            [
+                ("Horizon Enterprises", "2023"),
+                ("Horizon Enterprises", "2024"),
+                ("Aegis Corp", "2020"),
+            ],
+        )
+
+    def test_operation_steps_expand_nested_change_payload_from_llm_step(self) -> None:
+        plan = {
+            "normalized_question": "Apply the listed value revisions.",
+            "steps": [
+                {
+                    "operation": "change",
+                    "question_hint": "Revise the specified category-year values.",
+                    "operation_target": {"categories": ["Horizon Enterprises", "Aegis Corp"]},
+                    "data_change": {
+                        "change": {
+                            "changes": [
+                                {
+                                    "category_name": "Horizon Enterprises",
+                                    "years": ["2023", "2024"],
+                                    "values": [12.78, 14.41],
+                                },
+                                {
+                                    "category_name": "Aegis Corp",
+                                    "years": ["2020"],
+                                    "values": [15.35],
+                                },
+                            ]
+                        }
+                    },
+                    "new_points": [],
+                }
+            ],
+            "new_points": [],
+            "llm_success": True,
+        }
+
+        steps = _operation_steps_from_plan(plan, "Apply the listed value revisions.", {})
+
+        self.assertEqual([step["operation"] for step in steps], ["change", "change", "change"])
+        self.assertEqual(
+            [(step["data_change"]["changes"][0]["category_name"], step["data_change"]["changes"][0]["years"][0]) for step in steps],
+            [
+                ("Horizon Enterprises", "2023"),
+                ("Horizon Enterprises", "2024"),
+                ("Aegis Corp", "2020"),
+            ],
+        )
+
     def test_operation_steps_expand_update_style_changes_into_atomic_steps(self) -> None:
         plan = {
             "normalized_question": "Apply the listed value revisions.",

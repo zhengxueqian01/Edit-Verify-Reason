@@ -359,7 +359,9 @@ def _update_area_remove_series(
 
     legend, legend_items = _extract_legend_items(root, content)
     labels = [item["label"] for item in legend_items if item.get("label")]
-    matched_labels = _match_labels(question, labels)
+    matched_labels = _extract_structured_delete_labels(operation_target, data_change)
+    if not matched_labels:
+        matched_labels = _match_labels(question, labels)
     if not matched_labels and llm is not None:
         label = _match_label_with_llm(question, labels, llm)
         if label:
@@ -376,8 +378,8 @@ def _update_area_remove_series(
             output_path=output_path,
             svg_output_path=svg_output_path,
             llm=llm,
-            operation_target=None,
-            data_change=None,
+            operation_target=operation_target,
+            data_change=data_change,
         )
     label = matched_labels[0]
 
@@ -1190,6 +1192,44 @@ def _extract_structured_add_payload(
         except (TypeError, ValueError):
             continue
     return label, values
+
+
+def _extract_structured_delete_labels(
+    operation_target: dict[str, Any] | None,
+    data_change: dict[str, Any] | None,
+) -> list[str]:
+    labels: list[str] = []
+    candidates: list[Any] = []
+    if isinstance(operation_target, dict):
+        candidates.extend(
+            [
+                operation_target.get("category_name"),
+                operation_target.get("del_category"),
+                operation_target.get("category_names"),
+                operation_target.get("del_categories"),
+            ]
+        )
+    if isinstance(data_change, dict):
+        del_block = data_change.get("del")
+        if isinstance(del_block, dict):
+            candidates.extend(
+                [
+                    del_block.get("category_name"),
+                    del_block.get("category_names"),
+                    del_block.get("category"),
+                ]
+            )
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            text = candidate.strip()
+            if text and text not in labels:
+                labels.append(text)
+        elif isinstance(candidate, list):
+            for item in candidate:
+                text = str(item).strip()
+                if text and text not in labels:
+                    labels.append(text)
+    return labels
 
 
 def _extract_structured_changes(

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from chart_agent.perception.area_svg_updater import (
     SVG_NS,
+    _area_series_values,
     _extract_area_groups,
     _extract_multi_add_series_specs,
     _resolve_area_ops,
@@ -166,6 +167,67 @@ class AreaSvgUpdaterTests(unittest.TestCase):
         self.assertIn("<!-- Alpha -->", text)
         self.assertNotIn("<!-- Beta -->", text)
         self.assertIn("<!-- Gamma -->", text)
+
+        tmpdir.cleanup()
+
+    def test_update_area_change_uses_fill_mapping_when_legend_order_differs(self) -> None:
+        content = f"""
+        <svg xmlns="{SVG_NS}">
+          <g id="axes_1">
+            <g id="FillBetweenPolyCollection_1">
+              <path d="M 0 95 L 10 94 L 10 100 L 0 100 Z" style="fill: #333333" />
+            </g>
+            <g id="FillBetweenPolyCollection_2">
+              <path d="M 0 85 L 10 84 L 10 95 L 0 95 Z" style="fill: #111111" />
+            </g>
+            <g id="FillBetweenPolyCollection_3">
+              <path d="M 0 80 L 10 79 L 10 85 L 0 85 Z" style="fill: #222222" />
+            </g>
+          </g>
+          <g id="legend_1">
+            <g id="patch_1"><path d="M 0 0 L 5 0 L 5 5 L 0 5 z" style="fill: #111111" /></g>
+            <g id="text_1"><!-- Alpha --><g transform="translate(30 20) scale(0.1 -0.1)"></g></g>
+            <g id="patch_2"><path d="M 0 14 L 5 14 L 5 19 L 0 19 z" style="fill: #222222" /></g>
+            <g id="text_2"><!-- Beta --><g transform="translate(30 34) scale(0.1 -0.1)"></g></g>
+            <g id="patch_3"><path d="M 0 28 L 5 28 L 5 33 L 0 33 z" style="fill: #333333" /></g>
+            <g id="text_3"><!-- Gamma --><g transform="translate(30 48) scale(0.1 -0.1)"></g></g>
+          </g>
+        </svg>
+        """
+        tmpdir, svg_path = self._write_temp_svg(content)
+        out_svg = Path(tmpdir.name) / "out.svg"
+        out_png = Path(tmpdir.name) / "out.png"
+        mapping_info = {
+            "x_ticks": [(0.0, 0.0), (10.0, 10.0)],
+            "y_ticks": [(100.0, 0.0), (0.0, 100.0)],
+        }
+
+        with patch("chart_agent.perception.area_svg_updater.render_svg_to_png", return_value=str(out_png)):
+            _update_area_year_point(
+                str(svg_path),
+                'Change "Beta" in 10 to 12',
+                mapping_info,
+                output_path=str(out_png),
+                svg_output_path=str(out_svg),
+                llm=None,
+                operation_target={"category_name": "Beta"},
+                data_change={
+                    "change": {
+                        "changes": [
+                            {"category_name": "Beta", "years": [10], "values": [12]},
+                        ]
+                    }
+                },
+            )
+
+        root = ET.parse(out_svg).getroot()
+        axes = root.find(f'.//{{{SVG_NS}}}g[@id="axes_1"]')
+        assert axes is not None
+        groups = _extract_area_groups(axes)
+        x_values, series_values = _area_series_values(groups, mapping_info["y_ticks"])
+        beta_idx = next(i for i, group in enumerate(groups) if group["fill"] == "#222222")
+        year_idx = min(range(len(x_values)), key=lambda i: abs(x_values[i] - 10.0))
+        self.assertEqual(series_values[beta_idx][year_idx], 12.0)
 
         tmpdir.cleanup()
 
