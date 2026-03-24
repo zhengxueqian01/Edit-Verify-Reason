@@ -5,9 +5,11 @@ import xml.etree.ElementTree as ET
 
 from chart_agent.core.vision_tool_phase import (
     _extract_colored_scatter_points,
+    _extract_line_legend_map,
     _extract_line_labels_from_intersection_question,
     _prefer_line_intersection_tools,
     _prefer_multi_color_scatter_tools,
+    _svg_isolate_target_lines,
     _svg_zoom_and_highlight_intersection,
 )
 
@@ -95,6 +97,10 @@ class VisionToolPhaseTests(unittest.TestCase):
             updated,
             [
                 {
+                    "tool": "isolate_target_lines",
+                    "args": {"line_A": "Starburst Online", "line_B": "AetherNet"},
+                },
+                {
                     "tool": "zoom_and_highlight_intersection",
                     "args": {"line_A": "Starburst Online", "line_B": "AetherNet"},
                 }
@@ -173,6 +179,126 @@ class VisionToolPhaseTests(unittest.TestCase):
         self.assertEqual(texts, [])
         overlay_strokes = [path.get("stroke") for path in paths[:2]]
         self.assertEqual(sorted(overlay_strokes), ["#0000ff", "#ff0000"])
+
+    def test_zoom_and_highlight_intersection_ignores_legend_sample_lines_inside_axes(self) -> None:
+        root = ET.fromstring(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="axes_1">
+                <g id="legend_1">
+                  <g id="line2d_update_legend"><path d="M 0 0 L 5 0" style="stroke: #2ca02c" /></g>
+                  <g id="text_update_legend"><!-- Cinder Guild --><text>Cinder Guild</text></g>
+                  <g id="legend_line_a"><path d="M 0 14 L 5 14" style="stroke: #98df8a" /></g>
+                  <g id="text_1"><!-- Aether University --><text>Aether University</text></g>
+                </g>
+                <g id="line2d_1">
+                  <path d="M 10 10 L 20 20 L 30 30" style="fill: none; stroke: #98df8a; stroke-width: 2" />
+                </g>
+                <g id="line2d_update">
+                  <path d="M 10 30 L 20 20 L 30 10" style="fill: none; stroke: #2ca02c; stroke-width: 2" />
+                </g>
+              </g>
+            </svg>
+            """
+        )
+        overlay = ET.Element("{http://www.w3.org/2000/svg}g")
+
+        _svg_zoom_and_highlight_intersection(
+            root,
+            overlay,
+            "http://www.w3.org/2000/svg",
+            {"line_A": "Aether University", "line_B": "Cinder Guild"},
+            100,
+            100,
+        )
+
+        circles = overlay.findall("{http://www.w3.org/2000/svg}circle")
+        self.assertGreaterEqual(len(circles), 1)
+
+    def test_isolate_target_lines_fades_only_non_target_lines(self) -> None:
+        root = ET.fromstring(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="axes_1">
+                <g id="legend_1">
+                  <g id="line2d_legend_1"><path d="M 0 0 L 5 0" style="stroke: #ff0000" /></g>
+                  <g id="text_1"><!-- Alpha --><text>Alpha</text></g>
+                  <g id="line2d_legend_2"><path d="M 0 14 L 5 14" style="stroke: #0000ff" /></g>
+                  <g id="text_2"><!-- Beta --><text>Beta</text></g>
+                  <g id="line2d_legend_3"><path d="M 0 28 L 5 28" style="stroke: #00aa00" /></g>
+                  <g id="text_3"><!-- Gamma --><text>Gamma</text></g>
+                </g>
+                <g id="line2d_1">
+                  <path d="M 10 10 L 20 20 L 30 30" style="fill: none; stroke: #ff0000; stroke-width: 2" />
+                </g>
+                <g id="line2d_2">
+                  <path d="M 10 30 L 20 20 L 30 10" style="fill: none; stroke: #0000ff; stroke-width: 2" />
+                </g>
+                <g id="line2d_3">
+                  <path d="M 10 25 L 20 25 L 30 25" style="fill: none; stroke: #00aa00; stroke-width: 2" />
+                </g>
+              </g>
+            </svg>
+            """
+        )
+
+        _svg_isolate_target_lines(
+            root,
+            "http://www.w3.org/2000/svg",
+            {"line_A": "Alpha", "line_B": "Beta"},
+        )
+
+        gamma_path = root.find(".//{http://www.w3.org/2000/svg}g[@id='line2d_3']/{http://www.w3.org/2000/svg}path")
+        alpha_path = root.find(".//{http://www.w3.org/2000/svg}g[@id='line2d_1']/{http://www.w3.org/2000/svg}path")
+        gamma_text = root.find(".//{http://www.w3.org/2000/svg}g[@id='text_3']/{http://www.w3.org/2000/svg}text")
+        alpha_text = root.find(".//{http://www.w3.org/2000/svg}g[@id='text_1']/{http://www.w3.org/2000/svg}text")
+
+        assert gamma_path is not None
+        assert alpha_path is not None
+        assert gamma_text is not None
+        assert alpha_text is not None
+        self.assertIn("opacity: 0.46", gamma_path.get("style", ""))
+        self.assertIn("opacity: 1.0", alpha_path.get("style", ""))
+        self.assertNotIn("opacity:", gamma_text.get("style", ""))
+        self.assertNotIn("opacity:", alpha_text.get("style", ""))
+
+    def test_extract_line_legend_map_supports_generated_update_legend_groups(self) -> None:
+        root = ET.fromstring(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="legend_1">
+                <g id="line2d_1"><path d="M 0 0 L 5 0" style="stroke: #ff0000" /></g>
+                <g id="text_1"><!-- Starburst Online --><text>Starburst Online</text></g>
+                <g id="line2d_update_legend"><path d="M 0 14 L 5 14" style="stroke: #0000ff" /></g>
+                <g id="text_update_legend"><!-- AetherNet --><text>AetherNet</text></g>
+              </g>
+            </svg>
+            """
+        )
+
+        content = ET.tostring(root, encoding="unicode")
+        legend_map = _extract_line_legend_map(root, "http://www.w3.org/2000/svg", content)
+
+        self.assertEqual(legend_map, {"Starburst Online": "#ff0000", "AetherNet": "#0000ff"})
+
+    def test_extract_line_legend_map_supports_direct_text_nodes(self) -> None:
+        root = ET.fromstring(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="legend_1">
+                <g id="legend_line_a"><path d="M 0 0 L 5 0" style="stroke: #ff0000" /></g>
+                <text x="10" y="10">Starburst Online</text>
+                <g id="legend_line_b"><path d="M 0 14 L 5 14" style="stroke: #0000ff" /></g>
+                <text x="10" y="24">AetherNet</text>
+              </g>
+            </svg>
+            """
+        )
+
+        content = ET.tostring(root, encoding="unicode")
+        legend_map = _extract_line_legend_map(root, "http://www.w3.org/2000/svg", content)
+
+        self.assertEqual(legend_map, {"Starburst Online": "#ff0000", "AetherNet": "#0000ff"})
 
 
 if __name__ == "__main__":

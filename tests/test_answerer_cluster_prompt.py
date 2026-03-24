@@ -32,6 +32,8 @@ class AnswererClusterPromptTests(unittest.TestCase):
         self.assertEqual(2, len(llm.prompt))
         self.assertIn(ANSWER_SYSTEM_PROMPT, llm.prompt[0].content)
         self.assertIn("Image context: The requested chart update has already been applied.", llm.prompt[0].content)
+        self.assertIn("For cluster-counting questions, follow the clustering rule stated in the question.", llm.prompt[0].content)
+        self.assertIn("same category that are connected by enough intermediate points", llm.prompt[0].content)
 
         human_content = llm.prompt[1].content
         self.assertIsInstance(human_content, str)

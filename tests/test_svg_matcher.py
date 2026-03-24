@@ -194,6 +194,43 @@ class SvgMatcherTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["label_score"], 0.0)
         self.assertLess(result["score"], 1.0)
 
+    def test_compare_svgs_area_unescapes_legend_entities(self) -> None:
+        pred_svg = """\
+<svg xmlns="http://www.w3.org/2000/svg">
+  <g id="axes_1">
+    <g id="FillBetweenPolyCollection_1">
+      <path d="M 10 40 L 20 30 L 30 20 L 30 60 L 20 60 L 10 60" />
+    </g>
+  </g>
+  <g id="legend_1">
+    <g id="text_1"><!-- Research & Development --></g>
+  </g>
+</svg>
+"""
+        gt_svg = """\
+<svg xmlns="http://www.w3.org/2000/svg">
+  <g id="axes_1">
+    <g id="FillBetweenPolyCollection_1">
+      <path d="M 10 40 L 20 30 L 30 20 L 30 60 L 20 60 L 10 60" />
+    </g>
+  </g>
+  <g id="legend_1">
+    <g id="text_1"><!-- Research &amp; Development --></g>
+  </g>
+</svg>
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pred_path = Path(tmpdir) / "pred.svg"
+            gt_path = Path(tmpdir) / "gt.svg"
+            pred_path.write_text(pred_svg, encoding="utf-8")
+            gt_path.write_text(gt_svg, encoding="utf-8")
+
+            result = compare_svgs(pred_path, gt_path)
+
+        self.assertEqual(result["chart_type"], "area")
+        self.assertEqual(result["metrics"]["label_score"], 1.0)
+        self.assertEqual(result["score"], 1.0)
+
     def test_compare_svgs_scatter_penalizes_color_mismatch(self) -> None:
         pred_svg = """\
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">

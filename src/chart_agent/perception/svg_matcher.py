@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import html
 import math
 import re
 import xml.etree.ElementTree as ET
@@ -292,7 +293,8 @@ def _local_name(tag: str) -> str:
 
 
 def _normalize_text(value: str | None) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip()
     return text[:120]
 
 

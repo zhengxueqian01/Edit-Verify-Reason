@@ -8,7 +8,10 @@ from typing import Any
 
 ANSWER_SYSTEM_PROMPT = (
     "Return ONLY valid JSON. Do not include any extra text.\n"
-    'Schema: {"answer": string, "confidence": number between 0 and 1, "reason": [string]}'
+    'Schema: {"answer": string, "confidence": number between 0 and 1, "reason": [string]}\n'
+    "For cluster-counting questions, follow the clustering rule stated in the question.\n"
+    "If the chart distinguishes categories/colors, points of the same category that are connected by enough intermediate "
+    "points should be treated as one cluster when that satisfies the DBSCAN conditions in the question."
 )
 
 

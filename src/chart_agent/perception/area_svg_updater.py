@@ -983,7 +983,9 @@ def _append_legend_item(
     )
     path.set("style", f"fill: {fill}")
 
-    text = ET.SubElement(legend, f"{{{SVG_NS}}}text")
+    text_group = ET.SubElement(legend, f"{{{SVG_NS}}}g", {"id": "text_update"})
+    text_group.append(ET.Comment(f" {label} "))
+    text = ET.SubElement(text_group, f"{{{SVG_NS}}}text")
     text.set("x", f"{text_x:.6f}")
     text.set("y", f"{next_y_min + height * 0.85:.6f}")
     text.set("font-size", "10")

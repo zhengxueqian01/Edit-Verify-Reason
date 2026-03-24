@@ -14,6 +14,7 @@ from chart_agent.perception.line_svg_updater import (
     _append_legend_item,
     _pick_unused_line_stroke,
     _resolve_delete_labels,
+    _resolve_line_ops,
     _update_line_point,
     update_line_svg,
 )
@@ -131,10 +132,16 @@ class LineSvgAxisLayoutTests(unittest.TestCase):
         assert legend is not None
         _append_legend_item(legend, items, "Third", "#2ca02c", show_marker=False)
 
-        text_nodes = legend.findall("{http://www.w3.org/2000/svg}text")
-        self.assertEqual(len(text_nodes), 1)
-        self.assertEqual(text_nodes[0].text, "Third")
-        self.assertEqual(text_nodes[0].get("y"), "48.000000")
+        direct_text_nodes = legend.findall("./{http://www.w3.org/2000/svg}text")
+        self.assertEqual(direct_text_nodes, [])
+        text_group = legend.find('./{http://www.w3.org/2000/svg}g[@id="text_update_legend"]')
+        self.assertIsNotNone(text_group)
+        assert text_group is not None
+        text_node = text_group.find("{http://www.w3.org/2000/svg}text")
+        self.assertIsNotNone(text_node)
+        assert text_node is not None
+        self.assertEqual(text_node.text, "Third")
+        self.assertEqual(text_node.get("y"), "48.000000")
 
     def test_extract_line_style_uses_unused_color_and_preserves_marker_flag(self) -> None:
         root = ET.fromstring(
@@ -232,6 +239,99 @@ class LineSvgAxisLayoutTests(unittest.TestCase):
         text = out_svg.read_text(encoding="utf-8")
         self.assertIn('d="M 0.000000 85.000000 L 10.000000 80.000000"', text)
         self.assertIn('d="M 0.000000 85.000000 L 10.000000 70.000000"', text)
+
+        tmpdir.cleanup()
+
+    def test_resolve_line_ops_prefers_structured_change_payload(self) -> None:
+        ops = _resolve_line_ops(
+            'Operation: change\nData change: {"changes": [{"category_name": "A", "year_values": {"0": 15}}]}',
+            data_change={
+                "changes": [
+                    {"category_name": "A", "year_to_value": {"0": 15}},
+                ]
+            },
+        )
+
+        self.assertEqual(ops, ["change"])
+
+    def test_resolve_line_ops_uses_structured_delete_change_sequence(self) -> None:
+        ops = _resolve_line_ops(
+            'Delete the category A and apply revisions.',
+            data_change={
+                "del": {"category_name": "A"},
+                "change": {
+                    "changes": [
+                        {"category_name": "B", "years": [0], "values": [15]},
+                    ]
+                },
+            },
+        )
+
+        self.assertEqual(ops, ["delete", "change"])
+
+    def test_resolve_line_ops_does_not_treat_generic_category_name_as_add(self) -> None:
+        ops = _resolve_line_ops(
+            'Delete the category/series "Alpha"',
+            operation_target={"category_name": "Alpha"},
+            data_change={},
+        )
+
+        self.assertEqual(ops, ["delete"])
+
+    def test_update_line_point_supports_year_to_value_and_cleans_update_overlay(self) -> None:
+        content = """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="axes_1">
+                <g id="line2d_1">
+                  <path d="M 0 90 L 10 80" style="fill: none; stroke: #111111; stroke-width: 2" />
+                </g>
+                <g id="line2d_2">
+                  <path d="M 0 85 L 10 75" style="fill: none; stroke: #222222; stroke-width: 2" />
+                </g>
+                <g id="line2d_update">
+                  <path d="M 0 70 L 10 60" style="fill: none; stroke: #ff7f0e; stroke-width: 2" />
+                </g>
+                <g id="line2d_update_markers"><circle cx="0" cy="70" r="3" /></g>
+              </g>
+              <g id="legend_1">
+                <g id="line_1"><path d="M 0 0 L 5 0" style="fill: none; stroke: #111111; stroke-width: 2" /></g>
+                <g id="text_1"><!-- A --><g transform="translate(30 20) scale(0.1 -0.1)"></g></g>
+                <g id="line_2"><path d="M 0 14 L 5 14" style="fill: none; stroke: #222222; stroke-width: 2" /></g>
+                <g id="text_2"><!-- B --><g transform="translate(30 34) scale(0.1 -0.1)"></g></g>
+                <g id="line2d_update_legend"><path d="M 0 28 L 5 28" style="fill: none; stroke: #ff7f0e; stroke-width: 2" /></g>
+              </g>
+            </svg>
+        """
+        tmpdir, svg_path = self._write_temp_svg(content)
+        out_svg = Path(tmpdir.name) / "out.svg"
+        out_png = Path(tmpdir.name) / "out.png"
+        mapping_info = {
+            "x_ticks": [(0.0, 0.0), (10.0, 10.0)],
+            "y_ticks": [(100.0, 0.0), (0.0, 100.0)],
+        }
+
+        with patch("chart_agent.perception.line_svg_updater.render_svg_to_png", return_value=str(out_png)):
+            update_line_svg(
+                str(svg_path),
+                'Operation: change\nData change: {"changes": [{"category_name": "A", "year_values": {"0": 15}}, {"category_name": "B", "year_values": {"10": 30}}]}',
+                mapping_info,
+                output_path=str(out_png),
+                svg_output_path=str(out_svg),
+                llm=None,
+                data_change={
+                    "changes": [
+                        {"category_name": "A", "year_to_value": {"0": 15}},
+                        {"category_name": "B", "year_to_value": {"10": 30}},
+                    ]
+                },
+            )
+
+        text = out_svg.read_text(encoding="utf-8")
+        self.assertIn('d="M 0.000000 85.000000 L 10.000000 80.000000"', text)
+        self.assertIn('d="M 0.000000 85.000000 L 10.000000 70.000000"', text)
+        self.assertNotIn('line2d_update"', text)
+        self.assertNotIn('line2d_update_markers', text)
+        self.assertNotIn('line2d_update_legend', text)
 
         tmpdir.cleanup()
 

@@ -554,6 +554,7 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
         update_question = cand_update
     if cand_qa:
         qa_question = cand_qa
+    qa_question = _preserve_cluster_param_suffix(split_source, qa_question)
     update_question = _compose_operation_text(update_question, structured_context_note)
     return update_question, qa_question, split_info, cand_data_change
 
@@ -809,11 +810,41 @@ def _split_preface_and_question(text: str) -> tuple[str, str]:
     return "", ""
 
 
+def _preserve_cluster_param_suffix(source_question: str, qa_question: str) -> str:
+    source = str(source_question or "").strip()
+    qa = str(qa_question or "").strip()
+    if not source or not qa:
+        return qa
+    if "eps" in qa.lower() and "min_samples" in qa.lower():
+        return qa
+    match = re.search(
+        r"(\(\s*eps\s*[:=]\s*[\d.]+\s*,\s*min_samples?\s*[:=]\s*\d+\s*\)\s*[?.!]?)\s*$",
+        source,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return qa
+    suffix = match.group(1).strip()
+    qa_core = qa.rstrip()
+    if qa_core.endswith("?"):
+        question_stem = qa_core[:-1].rstrip()
+        return f"{question_stem}? {suffix}".strip()
+    if qa_core.endswith((".", "!")):
+        qa_core = qa_core[:-1].rstrip()
+    if suffix and not qa_core.endswith(suffix):
+        qa_core = f"{qa_core} {suffix}".strip()
+    return qa_core.strip()
+
+
 def _extract_preface_operations(prefix: str) -> list[dict[str, Any]]:
     text = str(prefix or "").strip().rstrip(".")
     if not text:
         return []
-    clauses = re.split(r"\s+(?:and|then)\s+", text, flags=re.IGNORECASE)
+    clauses = re.split(
+        r"\s+(?:and|then)\s+(?=(?:adding|add|deleting|delete|removing|remove|changing|change|updating|update|applying|apply)\b)",
+        text,
+        flags=re.IGNORECASE,
+    )
     operations: list[dict[str, Any]] = []
     for clause in clauses:
         parsed = _parse_operation_clause(clause)
@@ -855,14 +886,21 @@ def _parse_add_clause(text: str) -> dict[str, Any] | None:
 
 
 def _parse_delete_clause(text: str) -> dict[str, Any] | None:
-    label = _extract_category_label(text)
-    if not label:
+    labels = _extract_category_labels(text)
+    if not labels:
         return None
+    if len(labels) == 1:
+        label = labels[0]
+        operation_target: dict[str, Any] = {"del_category": label}
+        data_change: dict[str, Any] = {"category_name": label}
+    else:
+        operation_target = {"del_categories": labels}
+        data_change = {"category_names": labels}
     return {
         "operation": "delete",
         "operation_text": _normalize_gerund_clause(text),
-        "operation_target": {"del_category": label},
-        "data_change": {"category_name": label},
+        "operation_target": operation_target,
+        "data_change": data_change,
     }
 
 
@@ -876,27 +914,58 @@ def _parse_change_clause(text: str) -> dict[str, Any] | None:
 
 
 def _extract_category_label(text: str) -> str:
+    labels = _extract_category_labels(text)
+    return labels[0] if labels else ""
+
+
+def _extract_category_labels(text: str) -> list[str]:
     quoted = re.findall(r'["“”]([^"“”]+)["“”]', text)
     if quoted:
-        return quoted[0].strip()
+        return [item.strip() for item in quoted if item.strip()]
     open_quoted = re.search(r'[“"]([^"“”]+)$', text)
     if open_quoted:
-        return open_quoted.group(1).strip()
-    match = re.search(
-        r"(?:category|series)\s+([A-Za-z0-9][A-Za-z0-9&'()\/,\- ]*[A-Za-z0-9)])$",
+        label = open_quoted.group(1).strip()
+        return [label] if label else []
+    plural_match = re.search(
+        r"(?:categories|series)\s+([A-Za-z0-9][A-Za-z0-9&'()\/,\- ]*[A-Za-z0-9)])$",
         text,
         flags=re.IGNORECASE,
     )
-    if match:
-        return match.group(1).strip()
+    if plural_match:
+        labels = _split_category_label_segment(plural_match.group(1))
+        if labels:
+            return labels
+    plural_match = re.search(
+        r"(?:categories|series)\s+([A-Za-z0-9][A-Za-z0-9&'()\/,\- ]*[A-Za-z0-9])",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if plural_match:
+        labels = _split_category_label_segment(plural_match.group(1))
+        if labels:
+            return labels
     match = re.search(
         r"(?:category|series)\s+([A-Za-z0-9][A-Za-z0-9&'()\/,\- ]*[A-Za-z0-9])",
         text,
         flags=re.IGNORECASE,
     )
     if match:
-        return match.group(1).strip()
-    return ""
+        label = match.group(1).strip()
+        return [label] if label else []
+    return []
+
+
+def _split_category_label_segment(segment: str) -> list[str]:
+    raw = str(segment or "").strip().strip(".")
+    if not raw:
+        return []
+    parts = re.split(r"\s+and\s+|,\s*", raw)
+    labels: list[str] = []
+    for part in parts:
+        label = part.strip().strip('"\''"“”")
+        if label and label not in labels:
+            labels.append(label)
+    return labels
 
 
 def _extract_years_and_values(text: str) -> tuple[list[str], list[float]]:
@@ -1371,25 +1440,27 @@ def _operation_steps_from_plan(
     if isinstance(steps, list) and steps:
         enriched_steps = _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
         if _llm_steps_cover_structured_ops(enriched_steps, structured_context, planned_question):
-            return _expand_composite_steps(enriched_steps)
+            return _prune_redundant_component_steps(_expand_composite_steps(enriched_steps))
     structured_steps = _build_structured_steps(structured_context, operation_plan, planned_question)
     if structured_steps:
         if isinstance(steps, list) and steps:
             enriched_steps = _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
-            return _expand_composite_steps(_merge_structured_with_existing_steps(structured_steps, enriched_steps))
-        return _expand_composite_steps(structured_steps)
+            return _prune_redundant_component_steps(
+                _expand_composite_steps(_merge_structured_with_existing_steps(structured_steps, enriched_steps))
+            )
+        return _prune_redundant_component_steps(_expand_composite_steps(structured_steps))
     if isinstance(steps, list) and steps:
-        return _expand_composite_steps(
+        return _prune_redundant_component_steps(_expand_composite_steps(
             _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
-        )
-    return _expand_composite_steps([
+        ))
+    return _prune_redundant_component_steps(_expand_composite_steps([
         {
             "operation": _infer_single_operation_from_text(planned_question),
             "question": planned_question,
             "question_hint": planned_question,
             "new_points": operation_plan.get("new_points", []),
         }
-    ])
+    ]))
 
 
 def _step_match_key(step: dict[str, Any]) -> tuple[str, str, str]:
@@ -1400,13 +1471,10 @@ def _step_match_key(step: dict[str, Any]) -> tuple[str, str, str]:
     if isinstance(target, dict):
         label = _first_non_empty_string(target.get("category_name"), target.get("category_names"))
     marker = ""
-    if operation == "change" and isinstance(data_change, dict):
-        change_root = data_change.get("change") if isinstance(data_change.get("change"), dict) else data_change
-        changes = change_root.get("changes") if isinstance(change_root, dict) else None
-        if isinstance(changes, list) and changes and isinstance(changes[0], dict):
-            years = changes[0].get("years")
-            if isinstance(years, list) and years:
-                marker = str(years[0])
+    if operation == "change":
+        atomic_changes = _atomic_changes_from_step(target, data_change)
+        if atomic_changes:
+            marker = str((atomic_changes[0].get("years") or [""])[0])
     return operation, label, marker
 
 
@@ -1508,40 +1576,31 @@ def _enrich_llm_steps_with_structured_data(
                     step["operation_target"] = {"category_name": label}
             fallback_delete_idx += 1
         elif op == "change":
-            if fallback_change_idx < len(change_steps):
-                if not step_change:
-                    remaining_changes: list[dict[str, Any]] = []
-                    for change_step in change_steps[fallback_change_idx:]:
-                        change_payload = change_step.get("data_change")
-                        if not isinstance(change_payload, dict):
-                            continue
-                        changes = change_payload.get("changes")
-                        if isinstance(changes, list):
-                            remaining_changes.extend(change for change in changes if isinstance(change, dict))
-                    if remaining_changes:
-                        first_label = str(remaining_changes[0].get("category_name") or "").strip()
-                        if first_label:
-                            step["operation_target"] = _merge_dict_like(
-                                {"category_name": first_label},
-                                step["operation_target"],
-                            )
-                        step["data_change"] = _merge_dict_like(
-                            {"changes": remaining_changes},
-                            step["data_change"],
+            step_atomic_changes = _atomic_changes_from_step(step["operation_target"], step["data_change"])
+            if step_atomic_changes:
+                first_label = str(step_atomic_changes[0].get("category_name") or "").strip()
+                if first_label:
+                    step["operation_target"] = _merge_dict_like({"category_name": first_label}, step["operation_target"])
+                step["data_change"] = {"changes": step_atomic_changes}
+                fallback_change_idx += len(step_atomic_changes)
+            elif fallback_change_idx < len(change_steps):
+                remaining_changes: list[dict[str, Any]] = []
+                for change_step in change_steps[fallback_change_idx:]:
+                    change_payload = change_step.get("data_change")
+                    if not isinstance(change_payload, dict):
+                        continue
+                    changes = change_payload.get("changes")
+                    if isinstance(changes, list):
+                        remaining_changes.extend(change for change in changes if isinstance(change, dict))
+                if remaining_changes:
+                    first_label = str(remaining_changes[0].get("category_name") or "").strip()
+                    if first_label:
+                        step["operation_target"] = _merge_dict_like(
+                            {"category_name": first_label},
+                            step["operation_target"],
                         )
-                    fallback_change_idx = len(change_steps)
-                else:
-                    fallback_change = change_steps[fallback_change_idx]
-                    step["operation_target"] = _merge_dict_like(
-                        fallback_change.get("operation_target"),
-                        step["operation_target"],
-                    )
-                    if fallback_change.get("data_change"):
-                        step["data_change"] = _merge_dict_like(
-                            fallback_change.get("data_change"),
-                            step["data_change"],
-                        )
-                    fallback_change_idx += 1
+                    step["data_change"] = {"changes": remaining_changes}
+                fallback_change_idx = len(change_steps)
 
         enriched.append(step)
 
@@ -1570,7 +1629,7 @@ def _llm_steps_cover_structured_ops(
 ) -> bool:
     if not steps:
         return False
-    expected_ops = _ordered_structured_ops("", operation_text)
+    expected_ops = _expected_structured_ops(structured_context, operation_text)
     if not expected_ops:
         return True
     actual_ops: list[str] = []
@@ -1618,7 +1677,7 @@ def _build_structured_steps(
                 op_to_hints.setdefault(step_op, []).append(hint)
 
     steps: list[dict[str, Any]] = []
-    ordered_ops = _ordered_structured_ops("", operation_text)
+    ordered_ops = _expected_structured_ops(structured_context, operation_text)
     for op in ordered_ops:
         if op in {"del", "delete"}:
             labels = _structured_delete_labels(operation_target, data_change)
@@ -1653,6 +1712,54 @@ def _build_structured_steps(
                 steps.extend(change_steps)
                 continue
     return steps
+
+
+def _expected_structured_ops(
+    structured_context: dict[str, Any],
+    operation_text: str,
+) -> list[str]:
+    if isinstance(structured_context, dict):
+        structured_ops = _ordered_structured_ops_from_context(structured_context)
+        if structured_ops:
+            return structured_ops
+    return _ordered_structured_ops("", operation_text)
+
+
+def _ordered_structured_ops_from_context(structured_context: dict[str, Any]) -> list[str]:
+    if not isinstance(structured_context, dict):
+        return []
+    data_change = structured_context.get("data_change")
+    if not isinstance(data_change, dict):
+        return []
+
+    ordered: list[str] = []
+
+    def append(token: str) -> None:
+        normalized = _normalize_operation_token(token)
+        if normalized and (not ordered or ordered[-1] != normalized):
+            ordered.append(normalized)
+
+    for key, value in data_change.items():
+        if value in (None, "", [], {}):
+            continue
+        if key in {"del", "delete", "remove", "drop"}:
+            append("delete")
+        elif key in {"change", "changes", "update", "modify", "set"}:
+            append("change")
+        elif key in {"add", "insert", "append"}:
+            append("add")
+
+    if ordered:
+        return ordered
+
+    operation_target = structured_context.get("operation_target")
+    if isinstance(operation_target, dict):
+        if any(operation_target.get(key) for key in ("add_category", "add_categories")):
+            append("add")
+        if any(operation_target.get(key) for key in ("del_category", "del_categories")):
+            append("delete")
+
+    return ordered
 
 
 def _ordered_structured_ops(operation: str, operation_text: str) -> list[str]:
@@ -1874,6 +1981,64 @@ def _flatten_atomic_changes(changes: Any) -> list[dict[str, Any]]:
     return flattened
 
 
+def _atomic_changes_from_payload(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    change_root = payload.get("change") if isinstance(payload.get("change"), dict) else payload
+    if not isinstance(change_root, dict):
+        return []
+
+    changes = change_root.get("changes")
+    if isinstance(changes, list):
+        return _flatten_atomic_changes(changes)
+
+    if any(key in change_root for key in ("updates", "points", "years", "values", "year", "value")):
+        return _flatten_atomic_changes([change_root])
+    return []
+
+
+def _atomic_changes_from_step(operation_target: Any, data_change: Any) -> list[dict[str, Any]]:
+    target = operation_target if isinstance(operation_target, dict) else {}
+    change = data_change if isinstance(data_change, dict) else {}
+
+    atomic_changes = _atomic_changes_from_payload(change)
+    if atomic_changes:
+        return atomic_changes
+
+    label = _first_non_empty_string(
+        change.get("category_name"),
+        change.get("category"),
+        target.get("category_name"),
+        target.get("category"),
+    )
+    years = change.get("years")
+    values = change.get("values")
+    year = change.get("year")
+    value = change.get("value")
+
+    if not isinstance(years, list):
+        years = target.get("years")
+    if not isinstance(values, list):
+        values = target.get("values")
+    if year in (None, ""):
+        year = target.get("year")
+    if value is None:
+        value = target.get("value")
+
+    candidate: dict[str, Any] = {}
+    if label:
+        candidate["category_name"] = label
+    if isinstance(years, list) and isinstance(values, list) and years and values:
+        candidate["years"] = years
+        candidate["values"] = values
+        return _flatten_atomic_changes([candidate])
+    if year not in (None, "") and value is not None:
+        candidate["year"] = year
+        candidate["value"] = value
+        return _flatten_atomic_changes([candidate])
+    return []
+
+
 def _expand_composite_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     expanded: list[dict[str, Any]] = []
     for raw_step in steps:
@@ -1898,8 +2063,7 @@ def _expand_composite_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]
                 continue
 
         if operation == "change":
-            change_root = data_change.get("change") if isinstance(data_change.get("change"), dict) else data_change
-            atomic_changes = _flatten_atomic_changes(change_root.get("changes") if isinstance(change_root, dict) else None)
+            atomic_changes = _atomic_changes_from_step(operation_target, data_change)
             if len(atomic_changes) > 1:
                 for change in atomic_changes:
                     split_step = dict(step)
@@ -1918,6 +2082,39 @@ def _expand_composite_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]
 
         expanded.append(step)
     return expanded
+
+
+def _step_component_type(step: dict[str, Any]) -> str:
+    target = step.get("operation_target")
+    if not isinstance(target, dict):
+        return ""
+    value = target.get("element_type") or target.get("type")
+    return str(value or "").strip().lower()
+
+
+def _prune_redundant_component_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    kept: list[dict[str, Any]] = []
+    series_add_labels: set[str] = set()
+
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        op = str(step.get("operation") or "").strip().lower()
+        label = _first_non_empty_string((step.get("operation_target") or {}).get("category_name"))
+        component_type = _step_component_type(step)
+
+        if op == "add":
+            is_legend_only = component_type == "legend_item"
+            is_series_add = component_type in {"", "area", "line", "series", "line_and_legend"}
+
+            if is_legend_only and label and label in series_add_labels:
+                continue
+            if is_series_add and label:
+                series_add_labels.add(label)
+
+        kept.append(step)
+
+    return kept
 
 
 def _points_from_data_change(data_change: dict[str, Any]) -> list[dict[str, float]]:

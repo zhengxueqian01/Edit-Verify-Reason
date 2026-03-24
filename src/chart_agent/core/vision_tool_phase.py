@@ -89,6 +89,17 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "line_B": "string exact or near-exact line label from the legend",
         },
     },
+    {
+        "name": "isolate_target_lines",
+        "description": (
+            "For line charts, keep two named target lines visually prominent while fading "
+            "non-target line series and legend entries."
+        ),
+        "args": {
+            "line_A": "string exact or near-exact line label from the legend",
+            "line_B": "string exact or near-exact line label from the legend",
+        },
+    },
 ]
 
 
@@ -193,12 +204,12 @@ def _plan_tool_calls(
         f"- Canvas size is width={canvas_width:.2f}, height={canvas_height:.2f}.\n"
         "- Tool selection by chart type:\n"
         "  * scatter: default to isolate_all_color_topologies for cluster/topology reading across all colors; use isolate_color_topology only when a single target color is explicitly required; use add_point/draw_line/highlight_rect only as light local guides.\n"
-        "  * line: use zoom_and_highlight_intersection for counting or locating crossings between two named lines, and use add_point/draw_line/highlight_rect only as light local guides.\n"
+        "  * line: for intersection/counting questions, first use isolate_target_lines to fade unrelated lines, then use zoom_and_highlight_intersection to mark crossings; use add_point/draw_line/highlight_rect only as light local guides.\n"
         "  * area: use draw_global_peak_crosshairs for absolute/global highest-peak questions, and use add_point/draw_line/highlight_rect only as light local guides.\n"
         "  * unknown/other: do not use scatter-only, line-only, or area-only tools unless the visual structure truly matches that tool.\n"
         "- Cross-type restrictions:\n"
         "  * Do not use isolate_color_topology or isolate_all_color_topologies unless the chart is a scatter chart or scatter-like point cloud.\n"
-        "  * Do not use zoom_and_highlight_intersection unless the chart contains line series and the task is about line crossings/intersections.\n"
+        "  * Do not use isolate_target_lines or zoom_and_highlight_intersection unless the chart contains line series and the task is about line crossings/intersections.\n"
         "  * Do not use draw_global_peak_crosshairs unless the chart is an area chart and the task is about the global top peak.\n"
         "- Keep overlays minimal and non-occluding.\n"
         "- Prefer 1-3 calls; use 4+ only if the question truly requires multiple marks.\n"
@@ -290,10 +301,9 @@ def _prefer_line_intersection_tools(
     fallback = _default_line_intersection_tool_calls(chart_type=chart_type, question=question)
     if not fallback:
         return tool_calls
-    for call in tool_calls:
-        if str(call.get("tool") or "").strip() == "zoom_and_highlight_intersection":
-            return tool_calls
-    return fallback + tool_calls
+    existing_tools = {str(call.get("tool") or "").strip() for call in tool_calls}
+    prepend = [call for call in fallback if str(call.get("tool") or "").strip() not in existing_tools]
+    return prepend + tool_calls
 
 
 def _default_line_intersection_tool_calls(*, chart_type: str, question: str) -> list[dict[str, Any]]:
@@ -303,6 +313,10 @@ def _default_line_intersection_tool_calls(*, chart_type: str, question: str) -> 
     if not labels:
         return []
     return [
+        {
+            "tool": "isolate_target_lines",
+            "args": {"line_A": labels[0], "line_B": labels[1]},
+        },
         {
             "tool": "zoom_and_highlight_intersection",
             "args": {"line_A": labels[0], "line_B": labels[1]},
@@ -564,6 +578,23 @@ def _normalize_tool_call(
             },
             None,
         )
+    if tool == "isolate_target_lines":
+        line_a = _short_text(str(args.get("line_A") or "").strip(), 64)
+        line_b = _short_text(str(args.get("line_B") or "").strip(), 64)
+        if not line_a or not line_b:
+            return None, "missing_line_labels"
+        if line_a.lower() == line_b.lower():
+            return None, "same_line_labels"
+        return (
+            {
+                "tool": tool,
+                "args": {
+                    "line_A": line_a,
+                    "line_B": line_b,
+                },
+            },
+            None,
+        )
     return None, "unknown_tool"
 
 
@@ -629,6 +660,8 @@ def _execute_svg_tool_calls(
                 )
             elif tool == "draw_global_peak_crosshairs":
                 _svg_draw_global_peak_crosshairs(root, overlay, ns, canvas_w, canvas_h)
+            elif tool == "isolate_target_lines":
+                _svg_isolate_target_lines(root, ns, args)
             elif tool == "zoom_and_highlight_intersection":
                 _svg_zoom_and_highlight_intersection(root, overlay, ns, args, canvas_w, canvas_h)
             else:
@@ -977,6 +1010,49 @@ def _svg_zoom_and_highlight_intersection(
         )
 
 
+def _svg_isolate_target_lines(
+    root: ET.Element,
+    ns: str,
+    args: dict[str, Any],
+) -> None:
+    line_a = _short_text(str(args.get("line_A") or "").strip(), 64)
+    line_b = _short_text(str(args.get("line_B") or "").strip(), 64)
+    if not line_a or not line_b:
+        raise ValueError("line_A and line_B are required")
+
+    content = ET.tostring(root, encoding="unicode")
+    legend_map = _extract_line_legend_map(root, ns, content)
+    stroke_a = _resolve_line_stroke(line_a, legend_map)
+    stroke_b = _resolve_line_stroke(line_b, legend_map)
+    if not stroke_a or not stroke_b:
+        raise ValueError("line labels not found in legend")
+
+    target_strokes = {stroke_a, stroke_b}
+    axes = root.find(f".//{_nstag(ns, 'g')}[@id='axes_1']")
+    if axes is None:
+        raise ValueError("axes group not found")
+
+    legend = axes.find(f".//{_nstag(ns, 'g')}[@id='legend_1']")
+    legend_nodes = {id(node) for node in legend.iter()} if legend is not None else set()
+
+    for group in axes.findall(f".//{_nstag(ns, 'g')}"):
+        if id(group) in legend_nodes:
+            continue
+        gid = str(group.get("id") or "")
+        if not gid.startswith("line2d_"):
+            continue
+        path = group.find(f".//{_nstag(ns, 'path')}")
+        if path is None:
+            continue
+        stroke = _extract_stroke_from_group(group, ns)
+        if not stroke:
+            continue
+        if stroke in target_strokes:
+            _set_group_opacity(group, fill_opacity="0.98", stroke_opacity="0.98", opacity="1.0")
+        else:
+            _set_group_opacity(group, fill_opacity="0.30", stroke_opacity="0.34", opacity="0.46")
+
+
 def _svg_highlight_polyline(
     overlay: ET.Element,
     ns: str,
@@ -1243,17 +1319,37 @@ def _extract_line_legend_map(root: ET.Element, ns: str, content: str) -> dict[st
         return {}
 
     mapping: dict[str, str] = {}
+    for entry in _extract_line_legend_entries(legend, ns, content):
+        label = str(entry.get("label") or "").strip()
+        stroke = str(entry.get("stroke") or "").strip().lower()
+        if label and stroke:
+            mapping[label] = stroke
+    return mapping
+
+
+def _extract_line_legend_entries(legend: ET.Element, ns: str, content: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
     pending_stroke: str | None = None
+    pending_patch: ET.Element | None = None
     for child in list(legend):
         stroke = _extract_stroke_from_group(child, ns)
         if stroke:
             pending_stroke = stroke
+            pending_patch = child
             continue
         label = _extract_text_label_from_group(child, content)
         if label and pending_stroke:
-            mapping[label] = pending_stroke
+            entries.append(
+                {
+                    "label": label,
+                    "stroke": pending_stroke,
+                    "patch": pending_patch,
+                    "text": child,
+                }
+            )
             pending_stroke = None
-    return mapping
+            pending_patch = None
+    return entries
 
 
 def _extract_stroke_from_group(group: ET.Element, ns: str) -> str | None:
@@ -1273,6 +1369,9 @@ def _extract_stroke_from_group(group: ET.Element, ns: str) -> str | None:
 def _extract_text_label_from_group(group: ET.Element, content: str) -> str | None:
     gid = str(group.get("id") or "")
     if not gid.startswith("text_"):
+        if group.tag == _nstag(_svg_ns(group), "text"):
+            text = html.unescape("".join(group.itertext())).strip()
+            return text or None
         return None
     for node in group.iter():
         if node.tag is ET.Comment:
@@ -1305,8 +1404,13 @@ def _extract_line_points_by_stroke(root: ET.Element, ns: str, stroke: str) -> li
     axes = root.find(f".//{_nstag(ns, 'g')}[@id='axes_1']")
     if axes is None:
         return []
+    legend = axes.find(f".//{_nstag(ns, 'g')}[@id='legend_1']")
+    legend_nodes = {id(node) for node in legend.iter()} if legend is not None else set()
     stroke_norm = stroke.lower()
+    best_points: list[tuple[float, float]] = []
     for group in axes.findall(f".//{_nstag(ns, 'g')}"):
+        if id(group) in legend_nodes:
+            continue
         gid = str(group.get("id") or "")
         if not gid.startswith("line2d_"):
             continue
@@ -1317,8 +1421,10 @@ def _extract_line_points_by_stroke(root: ET.Element, ns: str, stroke: str) -> li
         match = re.search(r"stroke:\s*(#[0-9a-fA-F]{6})", style)
         path_stroke = match.group(1).lower() if match else str(path.get("stroke") or "").strip().lower()
         if path_stroke == stroke_norm:
-            return _parse_svg_path_points(path.get("d"))
-    return []
+            points = _parse_svg_path_points(path.get("d"))
+            if len(points) > len(best_points):
+                best_points = points
+    return best_points
 
 
 def _parse_svg_path_points(d_attr: Any) -> list[tuple[float, float]]:
@@ -1441,6 +1547,22 @@ def _set_element_opacity(
         elem.set("fill-opacity", fill_opacity)
         elem.set("stroke-opacity", stroke_opacity)
         elem.set("opacity", opacity)
+
+
+def _set_group_opacity(
+    group: ET.Element,
+    *,
+    fill_opacity: str,
+    stroke_opacity: str,
+    opacity: str,
+) -> None:
+    for elem in group.iter():
+        _set_element_opacity(
+            elem,
+            fill_opacity=fill_opacity,
+            stroke_opacity=stroke_opacity,
+            opacity=opacity,
+        )
 
 
 def _replace_style_attr(style: str, name: str, value: str) -> str:

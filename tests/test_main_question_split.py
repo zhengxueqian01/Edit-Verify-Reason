@@ -30,6 +30,28 @@ class _StubLLM:
 
 
 class MainQuestionSplitTests(unittest.TestCase):
+    def test_resolve_questions_preserves_dbscan_suffix_in_qa_question(self) -> None:
+        llm = _StubLLM(
+            json.dumps(
+                {
+                    "operation_text": "Add the listed points to the scatter chart.",
+                    "qa_question": "How many clusters are in the chart now?",
+                    "operation_target": {},
+                    "data_change": {"add": {"points": [{"x": 10, "y": 20, "color": "red"}]}},
+                    "llm_success": True,
+                }
+            )
+        )
+
+        _operation_text, qa_question, _split_info, _data_change = _resolve_questions(
+            {
+                "question": "After adding these points, how many clusters are in the chart now? (eps: 5.1, min_samples:3 )"
+            },
+            llm,
+        )
+
+        self.assertEqual(qa_question, "How many clusters are in the chart now? (eps: 5.1, min_samples:3 )")
+
     def test_normalize_gerund_clause_rewrites_conjoined_gerunds(self) -> None:
         text = "deleting the category CrimsonLink and applying the listed value revisions"
 
@@ -256,6 +278,26 @@ class MainQuestionSplitTests(unittest.TestCase):
 
         self.assertEqual([step["operation"] for step in steps], ["add", "delete"])
         self.assertEqual(steps[0]["operation_target"], {"category_name": "Regional Carriers"})
+
+    def test_rule_split_preserves_multiple_delete_labels_in_single_clause(self) -> None:
+        llm = _StubLLM(json.dumps({"llm_success": False}))
+        text = (
+            "After deleting the categories Meridian Territory Sanitation and Silverhaven District Recycling "
+            "and applying the listed value revisions, how many times do the lines intersect?"
+        )
+
+        operation_text, qa_question, split_info, data_change = _resolve_questions({"question": text}, llm)
+
+        self.assertIn("Delete the categories Meridian Territory Sanitation and Silverhaven District Recycling.", operation_text)
+        self.assertEqual(qa_question, "how many times do the lines intersect?")
+        self.assertEqual(
+            split_info["operation_target"],
+            {"del_categories": ["Meridian Territory Sanitation", "Silverhaven District Recycling"]},
+        )
+        self.assertEqual(
+            data_change["del"],
+            {"category_names": ["Meridian Territory Sanitation", "Silverhaven District Recycling"]},
+        )
 
     def test_llm_intent_mode_overrides_plan_steps_when_available(self) -> None:
         llm = _StubLLM(
@@ -526,6 +568,44 @@ class MainQuestionSplitTests(unittest.TestCase):
             ],
         )
 
+    def test_operation_steps_fallback_preserves_missing_change_after_delete(self) -> None:
+        operation_text = "Delete the category CrimsonLink and apply the listed value revisions."
+        structured_context = {
+            "operation_target": {"del_category": "CrimsonLink"},
+            "data_change": {
+                "del": {"category_name": "CrimsonLink"},
+                "change": {
+                    "changes": [
+                        {"category_name": "Starburst", "years": [2020], "values": [12]},
+                        {"category_name": "AetherNet", "years": [2021], "values": [10]},
+                    ]
+                },
+            },
+        }
+        plan = {
+            "normalized_question": operation_text,
+            "steps": [
+                {
+                    "operation": "delete",
+                    "question_hint": "Delete CrimsonLink.",
+                    "operation_target": {"category_name": "CrimsonLink"},
+                    "data_change": {},
+                    "new_points": [],
+                }
+            ],
+            "new_points": [],
+            "llm_success": True,
+        }
+
+        steps = _operation_steps_from_plan(plan, operation_text, structured_context)
+
+        self.assertEqual([step["operation"] for step in steps], ["delete", "change", "change"])
+        self.assertEqual(steps[0]["operation_target"], {"category_name": "CrimsonLink"})
+        self.assertEqual(
+            [(step["data_change"]["changes"][0]["category_name"], step["data_change"]["changes"][0]["years"][0]) for step in steps[1:]],
+            [("Starburst", "2020"), ("AetherNet", "2021")],
+        )
+
     def test_operation_steps_expand_update_style_changes_into_atomic_steps(self) -> None:
         plan = {
             "normalized_question": "Apply the listed value revisions.",
@@ -559,6 +639,180 @@ class MainQuestionSplitTests(unittest.TestCase):
             [step["data_change"]["changes"][0]["values"][0] for step in steps],
             [11, 12],
         )
+
+    def test_operation_steps_expand_target_years_with_values_only_payload(self) -> None:
+        plan = {
+            "normalized_question": "Delete two lines and apply the listed value revisions.",
+            "steps": [
+                {
+                    "operation": "delete",
+                    "question_hint": "",
+                    "operation_target": {"category_name": "MegaMall Chain"},
+                    "data_change": {"del": {"category_name": "MegaMall Chain"}},
+                    "new_points": [],
+                },
+                {
+                    "operation": "delete",
+                    "question_hint": "",
+                    "operation_target": {"category_name": "Tech Gadget Hubs"},
+                    "data_change": {"del": {"category_name": "Tech Gadget Hubs"}},
+                    "new_points": [],
+                },
+                {
+                    "operation": "change",
+                    "question_hint": "",
+                    "operation_target": {"category_name": "Fashion Boutiques", "years": ["1993", "1994"]},
+                    "data_change": {"values": [17625.13, 17964.39]},
+                    "new_points": [],
+                },
+                {
+                    "operation": "change",
+                    "question_hint": "",
+                    "operation_target": {"category_name": "Neighborhood Stores", "years": ["1993", "1994"]},
+                    "data_change": {"values": [22644.4, 15162.12]},
+                    "new_points": [],
+                },
+            ],
+            "new_points": [],
+            "llm_success": True,
+        }
+
+        steps = _operation_steps_from_plan(plan, "Delete two lines and apply changes.", {})
+
+        self.assertEqual([step["operation"] for step in steps], ["delete", "delete", "change", "change", "change", "change"])
+        self.assertEqual(
+            [(step["data_change"]["changes"][0]["category_name"], step["data_change"]["changes"][0]["years"][0]) for step in steps[2:]],
+            [
+                ("Fashion Boutiques", "1993"),
+                ("Fashion Boutiques", "1994"),
+                ("Neighborhood Stores", "1993"),
+                ("Neighborhood Stores", "1994"),
+            ],
+        )
+
+    def test_operation_steps_expand_nested_single_change_objects_per_step(self) -> None:
+        plan = {
+            "normalized_question": "Add one series and apply grouped changes.",
+            "steps": [
+                {
+                    "operation": "add",
+                    "question_hint": "",
+                    "operation_target": {"add_category": "Crystal Cove Villas", "element_type": "area"},
+                    "data_change": {
+                        "add": {
+                            "category_name": "Crystal Cove Villas",
+                            "years": ["2015", "2016"],
+                            "values": [3.64, 4.45],
+                        }
+                    },
+                    "new_points": [],
+                },
+                {
+                    "operation": "change",
+                    "question_hint": "",
+                    "operation_target": {"category_name": "Skyline Towers", "years": ["2023", "2024"]},
+                    "data_change": {"change": {"category_name": "Skyline Towers", "years": ["2023", "2024"], "values": [3.77, 3.54]}},
+                    "new_points": [],
+                },
+                {
+                    "operation": "change",
+                    "question_hint": "",
+                    "operation_target": {"category_name": "Willow Creek Estates", "years": ["2022", "2023"]},
+                    "data_change": {"change": {"category_name": "Willow Creek Estates", "years": ["2022", "2023"], "values": [2.91, 3.32]}},
+                    "new_points": [],
+                },
+            ],
+            "new_points": [],
+            "llm_success": True,
+        }
+
+        steps = _operation_steps_from_plan(plan, "Add one series and apply grouped changes.", {})
+
+        self.assertEqual([step["operation"] for step in steps], ["add", "change", "change", "change", "change"])
+        self.assertEqual(
+            [(step["data_change"]["changes"][0]["category_name"], step["data_change"]["changes"][0]["years"][0]) for step in steps[1:]],
+            [
+                ("Skyline Towers", "2023"),
+                ("Skyline Towers", "2024"),
+                ("Willow Creek Estates", "2022"),
+                ("Willow Creek Estates", "2023"),
+            ],
+        )
+
+    def test_operation_steps_drop_redundant_legend_item_add_for_same_category(self) -> None:
+        plan = {
+            "normalized_question": "Add the category The Golden Spoon.",
+            "steps": [
+                {
+                    "operation": "add",
+                    "question_hint": "",
+                    "operation_target": {"type": "area", "category_name": "The Golden Spoon", "fill": "#8c564b"},
+                    "data_change": {
+                        "category_name": "The Golden Spoon",
+                        "years": ["2015", "2016"],
+                        "values": [68.42, 74.48],
+                    },
+                    "new_points": [],
+                },
+                {
+                    "operation": "add",
+                    "question_hint": "",
+                    "operation_target": {"type": "legend_item", "category_name": "The Golden Spoon"},
+                    "data_change": {"category_name": "The Golden Spoon", "color": "#8c564b"},
+                    "new_points": [],
+                },
+            ],
+            "new_points": [],
+            "llm_success": True,
+        }
+
+        steps = _operation_steps_from_plan(plan, "Add the category The Golden Spoon.", {})
+
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0]["operation"], "add")
+        self.assertEqual(steps[0]["operation_target"]["category_name"], "The Golden Spoon")
+        self.assertEqual(steps[0]["operation_target"]["type"], "area")
+
+    def test_operation_steps_keep_multiple_series_adds_for_different_categories(self) -> None:
+        plan = {
+            "normalized_question": "Add two categories.",
+            "steps": [
+                {
+                    "operation": "add",
+                    "question_hint": "",
+                    "operation_target": {"type": "area", "category_name": "Alpha"},
+                    "data_change": {"category_name": "Alpha", "years": ["2015"], "values": [1]},
+                    "new_points": [],
+                },
+                {
+                    "operation": "add",
+                    "question_hint": "",
+                    "operation_target": {"type": "area", "category_name": "Beta"},
+                    "data_change": {"category_name": "Beta", "years": ["2015"], "values": [2]},
+                    "new_points": [],
+                },
+                {
+                    "operation": "add",
+                    "question_hint": "",
+                    "operation_target": {"type": "legend_item", "category_name": "Alpha"},
+                    "data_change": {"category_name": "Alpha", "color": "#111111"},
+                    "new_points": [],
+                },
+                {
+                    "operation": "add",
+                    "question_hint": "",
+                    "operation_target": {"type": "legend_item", "category_name": "Beta"},
+                    "data_change": {"category_name": "Beta", "color": "#222222"},
+                    "new_points": [],
+                },
+            ],
+            "new_points": [],
+            "llm_success": True,
+        }
+
+        steps = _operation_steps_from_plan(plan, "Add two categories.", {})
+
+        self.assertEqual([step["operation_target"]["category_name"] for step in steps], ["Alpha", "Beta"])
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ def update_line_svg(
     operation_target: dict[str, Any] | None = None,
     data_change: dict[str, Any] | None = None,
 ) -> str:
-    ops = _resolve_line_ops(question)
+    ops = _resolve_line_ops(question, operation_target=operation_target, data_change=data_change)
     if len(ops) > 1:
         return _run_line_ops_sequence(
             svg_path=svg_path,
@@ -163,7 +163,15 @@ def _add_line_series(
     return render_svg_to_png(target_svg, target_png)
 
 
-def _resolve_line_ops(question: str) -> list[str]:
+def _resolve_line_ops(
+    question: str,
+    *,
+    operation_target: dict[str, Any] | None = None,
+    data_change: dict[str, Any] | None = None,
+) -> list[str]:
+    structured_ops = _detect_structured_line_ops(operation_target, data_change)
+    if structured_ops:
+        return structured_ops
     clauses = [c.strip() for c in re.split(r"[；;\n]+", question) if c.strip()]
     ordered: list[str] = []
     for clause in clauses:
@@ -177,6 +185,14 @@ def _resolve_line_ops(question: str) -> list[str]:
 
 
 def _detect_line_op(text: str) -> str | None:
+    lowered = text.strip().lower()
+    if lowered.startswith("operation:"):
+        if "operation: delete" in lowered:
+            return "delete"
+        if "operation: change" in lowered:
+            return "change"
+        if "operation: add" in lowered:
+            return "add"
     if _has_delete_intent(text):
         return "delete"
     if _has_year_update(text):
@@ -184,6 +200,53 @@ def _detect_line_op(text: str) -> str | None:
     if _has_add_intent(text):
         return "add"
     return None
+
+
+def _detect_structured_line_ops(
+    operation_target: dict[str, Any] | None,
+    data_change: dict[str, Any] | None,
+) -> list[str]:
+    payload = data_change if isinstance(data_change, dict) else {}
+    ops: list[str] = []
+    if payload:
+        for key in payload.keys():
+            normalized = _normalize_line_op_token(str(key))
+            if not normalized:
+                continue
+            if normalized == "delete" and _extract_structured_line_delete_labels(operation_target, payload):
+                if normalized not in ops:
+                    ops.append(normalized)
+            elif normalized == "change" and _extract_structured_line_changes(payload):
+                if normalized not in ops:
+                    ops.append(normalized)
+            elif normalized == "add":
+                add_block = payload.get("add") if isinstance(payload.get("add"), dict) else payload
+                if isinstance(add_block, dict) and any(key in add_block for key in ("values", "category_name", "category")):
+                    if normalized not in ops:
+                        ops.append(normalized)
+        if not ops and _extract_structured_line_changes(payload):
+            ops.append("change")
+        if not ops and _extract_structured_line_delete_labels(operation_target, payload):
+            ops.append("delete")
+    target = operation_target if isinstance(operation_target, dict) else {}
+    if not ops and any(key in target for key in ("del_category", "del_categories")):
+        ops.append("delete")
+    if not ops and any(key in target for key in ("year", "years")):
+        ops.append("change")
+    if not ops and any(key in target for key in ("add_category", "add_categories")):
+        ops.append("add")
+    return ops
+
+
+def _normalize_line_op_token(token: str) -> str:
+    lowered = str(token or "").strip().lower()
+    if lowered in {"del", "delete", "remove", "drop", "del_categories"}:
+        return "delete"
+    if lowered in {"change", "changes", "update", "modify"}:
+        return "change"
+    if lowered in {"add", "append", "insert"}:
+        return "add"
+    return ""
 
 
 def _has_add_intent(question: str) -> bool:
@@ -271,6 +334,21 @@ def _run_line_ops_sequence(
         current_svg = step_svg
 
     return final_png
+
+
+def _remove_update_overlay(root: ET.Element) -> None:
+    axes = root.find(f'.//{{{SVG_NS}}}g[@id="axes_1"]')
+    if axes is not None:
+        for gid in ("line2d_update", "line2d_update_markers"):
+            node = axes.find(f'.//{{{SVG_NS}}}g[@id="{gid}"]')
+            if node is not None:
+                axes.remove(node)
+    legend = root.find(f'.//{{{SVG_NS}}}g[@id="legend_1"]')
+    if legend is not None:
+        for gid in ("line2d_update_legend", "text_update_legend"):
+            node = legend.find(f'./{{{SVG_NS}}}g[@id="{gid}"]')
+            if node is not None:
+                legend.remove(node)
 
 
 def _find_line_path(axes: ET.Element) -> tuple[ET.Element | None, ET.Element | None]:
@@ -449,6 +527,8 @@ def _update_line_point(
         line_path.set("d", _format_path(points))
         _update_marker_positions(line_group, points[idx][0], new_y)
 
+    _remove_update_overlay(root)
+
     svg_out, png_out = default_output_paths(svg_path, "line")
     target_svg = svg_output_path or svg_out
     target_png = output_path or png_out
@@ -556,6 +636,7 @@ def _remove_line_series(
             _remove_legend_item(root, legend, legend_items, label)
 
     _rescale_line_chart_after_removal(root, axes, content, mapping_info)
+    _remove_update_overlay(root)
 
     svg_out, png_out = default_output_paths(svg_path, "line")
     target_svg = svg_output_path or svg_out
@@ -659,7 +740,15 @@ def _extract_structured_line_delete_labels(
     labels: list[str] = []
     candidates: list[Any] = []
     if isinstance(operation_target, dict):
-        candidates.append(operation_target.get("category_name"))
+        candidates.extend(
+            [
+                operation_target.get("category_name"),
+                operation_target.get("category_names"),
+                operation_target.get("categories"),
+                operation_target.get("del_category"),
+                operation_target.get("del_categories"),
+            ]
+        )
     if isinstance(data_change, dict):
         del_block = data_change.get("del")
         if isinstance(del_block, dict):
@@ -670,6 +759,13 @@ def _extract_structured_line_delete_labels(
                     del_block.get("category"),
                 ]
             )
+        candidates.extend(
+            [
+                data_change.get("del_categories"),
+                data_change.get("category_names"),
+                data_change.get("categories"),
+            ]
+        )
     for candidate in candidates:
         if isinstance(candidate, str):
             text = candidate.strip()
@@ -687,26 +783,37 @@ def _extract_structured_line_changes(
     data_change: dict[str, Any] | None,
 ) -> list[tuple[str, float, float, str]]:
     payload = data_change if isinstance(data_change, dict) else {}
-    root = payload.get("change") if isinstance(payload.get("change"), dict) else payload
-    if not isinstance(root, dict):
-        return []
-    changes = root.get("changes")
-    if not isinstance(changes, list):
-        return []
+    changes_sources: list[list[Any]] = []
+    if isinstance(payload.get("changes"), list):
+        changes_sources.append(payload.get("changes"))
+    root = payload.get("change") if isinstance(payload.get("change"), dict) else None
+    if isinstance(root, dict) and isinstance(root.get("changes"), list):
+        changes_sources.append(root.get("changes"))
     out: list[tuple[str, float, float, str]] = []
-    for change in changes:
-        if not isinstance(change, dict):
-            continue
-        label = str(change.get("category_name") or change.get("category") or "").strip()
-        years = change.get("years")
-        values = change.get("values")
-        if not label or not isinstance(years, list) or not isinstance(values, list):
-            continue
-        for year, value in zip(years, values):
-            try:
-                out.append((label, float(year), float(value), "absolute"))
-            except (TypeError, ValueError):
+    for changes in changes_sources:
+        for change in changes:
+            if not isinstance(change, dict):
                 continue
+            label = str(change.get("category_name") or change.get("category") or "").strip()
+            if not label:
+                continue
+            year_values = change.get("year_to_value")
+            if isinstance(year_values, dict):
+                for year, value in year_values.items():
+                    try:
+                        out.append((label, float(year), float(value), "absolute"))
+                    except (TypeError, ValueError):
+                        continue
+                continue
+            years = change.get("years")
+            values = change.get("values")
+            if not isinstance(years, list) or not isinstance(values, list):
+                continue
+            for year, value in zip(years, values):
+                try:
+                    out.append((label, float(year), float(value), "absolute"))
+                except (TypeError, ValueError):
+                    continue
     return out
 
 
@@ -934,7 +1041,9 @@ def _append_legend_item(
         marker.set("r", "3")
         marker.set("style", f"fill: {stroke}; stroke: {stroke}")
 
-    text = ET.SubElement(legend, f"{{{SVG_NS}}}text")
+    text_group = ET.SubElement(legend, f"{{{SVG_NS}}}g", {"id": "text_update_legend"})
+    text_group.append(ET.Comment(f" {label} "))
+    text = ET.SubElement(text_group, f"{{{SVG_NS}}}text")
     text.set("x", f"{(x_max + 8.0):.6f}")
     text.set("y", f"{next_text_y:.6f}")
     text.set("font-size", "10")
@@ -1020,6 +1129,14 @@ def _extract_text_label(group: ET.Element, content: str) -> str | None:
     match = re.search(pattern, content, re.DOTALL)
     if match:
         return html.unescape(match.group(1)).strip()
+    for node in group.iter():
+        if node.tag is ET.Comment:
+            comment_text = html.unescape(str(node.text or "")).strip()
+            if comment_text:
+                return comment_text
+        text = html.unescape(str(node.text or "")).strip()
+        if text:
+            return text
     return None
 
 

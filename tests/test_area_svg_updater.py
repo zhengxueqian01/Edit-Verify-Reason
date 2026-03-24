@@ -10,6 +10,7 @@ from chart_agent.perception.area_svg_updater import (
     SVG_NS,
     _area_series_values,
     _extract_area_groups,
+    _extract_legend_items,
     _extract_multi_add_series_specs,
     _resolve_area_ops,
     _update_area_remove_series,
@@ -119,6 +120,57 @@ class AreaSvgUpdaterTests(unittest.TestCase):
         update_d = groups[-1]["path"].get("d", "")
         self.assertIn("0.000000 83.000000", update_d)
         self.assertIn("10.000000 72.000000", update_d)
+
+        tmpdir.cleanup()
+
+    def test_update_area_add_series_legend_uses_text_group_not_raw_text(self) -> None:
+        content = f"""
+        <svg xmlns="{SVG_NS}">
+          <g id="axes_1">
+            <g id="FillBetweenPolyCollection_1">
+              <path d="M 0 90 L 10 80 L 10 100 L 0 100 Z" style="fill: #111111" />
+            </g>
+            <g id="FillBetweenPolyCollection_2">
+              <path d="M 0 85 L 10 75 L 10 80 L 0 90 Z" style="fill: #222222" />
+            </g>
+          </g>
+          <g id="legend_1">
+            <g id="patch_1"><path d="M 0 0 L 5 0 L 5 5 L 0 5 z" style="fill: #111111" /></g>
+            <g id="text_1"><!-- Alpha --><g transform="translate(30 20) scale(0.1 -0.1)"></g></g>
+            <g id="patch_2"><path d="M 0 14 L 5 14 L 5 19 L 0 19 z" style="fill: #222222" /></g>
+            <g id="text_2"><!-- Beta --><g transform="translate(30 34) scale(0.1 -0.1)"></g></g>
+          </g>
+        </svg>
+        """
+        tmpdir, svg_path = self._write_temp_svg(content)
+        out_svg = Path(tmpdir.name) / "out.svg"
+        out_png = Path(tmpdir.name) / "out.png"
+        mapping_info = {
+            "top_boundary": [(0.0, 40.0), (10.0, 35.0)],
+            "y_ticks": [(100.0, 0.0), (0.0, 100.0)],
+        }
+
+        with patch("chart_agent.perception.area_svg_updater.render_svg_to_png", return_value=str(out_png)):
+            update_area_svg(
+                str(svg_path),
+                'Add the category/series "C"',
+                mapping_info,
+                output_path=str(out_png),
+                svg_output_path=str(out_svg),
+                operation_target={"category_name": "C"},
+                data_change={"add": {"category_name": "C", "values": [2, 3]}},
+            )
+
+        content_out = out_svg.read_text(encoding="utf-8")
+        root = ET.parse(out_svg).getroot()
+        legend = root.find(f'.//{{{SVG_NS}}}g[@id="legend_1"]')
+        assert legend is not None
+        direct_texts = legend.findall(f'./{{{SVG_NS}}}text')
+        self.assertEqual(direct_texts, [])
+        self.assertIn('id="text_update"', content_out)
+        self.assertIn("<!-- C -->", content_out)
+        _, items = _extract_legend_items(root, content_out)
+        self.assertIn("C", [item["label"] for item in items])
 
         tmpdir.cleanup()
 
