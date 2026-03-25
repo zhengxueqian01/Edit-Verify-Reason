@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from chart_agent.core.clusterer import run_dbscan_by_color
+from chart_agent.core.clusterer import resolve_dbscan_params, run_dbscan_by_color
 
 
 class ClustererTests(unittest.TestCase):
@@ -30,6 +30,16 @@ class ClustererTests(unittest.TestCase):
 
         self.assertEqual(result["clusters"], 2)
         self.assertEqual(result["cluster_counts_by_color"]["#d62728"], 2)
+
+    def test_resolve_dbscan_params_supports_colon_syntax(self) -> None:
+        eps, min_samples = resolve_dbscan_params(
+            "After adding these points, how many clusters are in the chart now? (eps: 4.1, min_samples:3 )",
+            default_eps=6.0,
+            default_min_samples=3,
+        )
+
+        self.assertEqual(eps, 4.1)
+        self.assertEqual(min_samples, 3)
 
 
 if __name__ == "__main__":

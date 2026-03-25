@@ -11,11 +11,11 @@ source "${ROOT_DIR}/evaluation/common/run_task_eval_common.sh"
 #   --models "gpt gemini claude qwen" \
 #   "$@"
 
-run_task_eval \
-  "task2" \
-  "dataset/task2-line/del" \
-  --models "gpt gemini claude qwen" \
-  "$@"
+# run_task_eval \
+  # "task2" \
+  # "dataset/task2-line/del" \
+  # --models "gpt gemini claude qwen" \
+  # "$@"
 
 run_task_eval \
   "task3" \

@@ -72,20 +72,16 @@ def update_area_svg(
             data_change=data_change,
         )
     if op == "change":
-        try:
-            return _update_area_year_point(
-                svg_path,
-                question,
-                mapping_info,
-                output_path=output_path,
-                svg_output_path=svg_output_path,
-                llm=llm,
-                operation_target=operation_target,
-                data_change=data_change,
-            )
-        except ValueError as exc:
-            if "No valid area update request found in question." not in str(exc):
-                raise
+        return _update_area_year_point(
+            svg_path,
+            question,
+            mapping_info,
+            output_path=output_path,
+            svg_output_path=svg_output_path,
+            llm=llm,
+            operation_target=operation_target,
+            data_change=data_change,
+        )
     return _update_area_add_series(
         svg_path,
         question,

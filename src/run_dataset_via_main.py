@@ -49,6 +49,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Resume in the existing task record directory and skip cases with result.json.",
     )
+    parser.add_argument(
+        "--model",
+        default="",
+        help="Override splitter/planner/executor/answer/tool_planner with one model key, e.g. gpt/claude/gemini/qwen.",
+    )
     return parser.parse_args()
 
 
@@ -429,6 +434,14 @@ def build_summary_entry(
     }
 
 
+def build_model_overrides(model_name: str) -> dict[str, str]:
+    normalized = str(model_name or "").strip()
+    if not normalized:
+        return {}
+    tasks = ("splitter", "planner", "executor", "answer", "tool_planner")
+    return {task: normalized for task in tasks}
+
+
 def main() -> None:
     args = parse_args()
     input_dir = resolve_input_dir(args.input_dir)
@@ -529,6 +542,7 @@ def main() -> None:
                     "svg_path": str(svg_path),
                     "image_path": str(image_path) if image_path.exists() else None,
                     "structured_update_context": structured_update_context,
+                    "model_overrides": build_model_overrides(args.model),
                     "text_spec": None,
                 }
             )

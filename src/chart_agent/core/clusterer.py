@@ -185,7 +185,7 @@ def _pixel_to_data(pixel: float, ticks: list[tuple[float, float]]) -> float:
 
 
 def _parse_eps(question: str) -> float | None:
-    match = re.search(r"eps\s*=\s*([\d.]+)", question)
+    match = re.search(r"eps\s*[:=]\s*([\d.]+)", question)
     if match:
         try:
             return float(match.group(1))
@@ -195,7 +195,7 @@ def _parse_eps(question: str) -> float | None:
 
 
 def _parse_min_samples(question: str) -> int | None:
-    match = re.search(r"min_samples?\s*=\s*(\d+)", question)
+    match = re.search(r"min_samples?\s*[:=]\s*(\d+)", question)
     if match:
         try:
             return int(match.group(1))

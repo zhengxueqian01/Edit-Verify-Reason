@@ -16,13 +16,15 @@ MODEL_LIST_DEFAULT=(gpt gemini claude qwen)
 usage_common() {
   cat <<'EOF'
 Usage:
-  run_task_eval <task-name> <dataset-dir> [dataset-dir ...] [--qa-index N] [--limit N] [--record-root DIR] [--models "gpt gemini"] [extra args...]
+  run_task_eval <task-name> <dataset-dir> [dataset-dir ...] [--qa-index N] [--limit N] [--record-root DIR] [--models "gpt gemini"] [--resume|--no-resume] [extra args...]
 
 Options:
   --qa-index N       QA index passed to src/run_dataset_via_main.py (default: 0)
   --limit N          Max cases per dataset folder (default: 0, all)
   --record-root DIR  Base output directory (default: output/dataset_records)
   --models "..."     Space/comma separated model list (default: gpt gemini claude qwen)
+  --resume           Resume from existing result.json files when present (default: on)
+  --no-resume        Disable resume and re-run all selected cases
 
 Any remaining args are forwarded to src/run_dataset_via_main.py.
 EOF
@@ -70,6 +72,7 @@ run_task_eval() {
   local limit="0"
   local record_root_base="output/dataset_records"
   local models_raw="${MODEL_LIST_DEFAULT[*]}"
+  local resume="1"
   local -a extra_args=()
 
   while [[ $# -gt 0 ]]; do
@@ -89,6 +92,14 @@ run_task_eval() {
       --models)
         models_raw="${2:?missing value for --models}"
         shift 2
+        ;;
+      --resume)
+        resume="1"
+        shift
+        ;;
+      --no-resume)
+        resume="0"
+        shift
         ;;
       --help|-h)
         usage_common
@@ -124,6 +135,9 @@ run_task_eval() {
         --limit "${limit}"
         --record-root "${record_root}"
       )
+      if [[ "${resume}" != "0" ]]; then
+        cmd+=(--resume)
+      fi
       if [[ ${#extra_args[@]} -gt 0 ]]; then
         cmd+=("${extra_args[@]}")
       fi
