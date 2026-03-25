@@ -42,6 +42,17 @@ class LineSvgAxisLayoutTests(unittest.TestCase):
 
         self.assertEqual(resolved, ["Customs Clearance"])
 
+    def test_resolve_delete_labels_matches_optional_at_prefix(self) -> None:
+        labels = ["@ApexAthletics", "@LuminaraPlay", "Nova"]
+
+        resolved = _resolve_delete_labels(
+            'Delete the categories ApexAthletics and LuminaraPlay.',
+            labels,
+            None,
+        )
+
+        self.assertEqual(resolved, ["@ApexAthletics", "@LuminaraPlay"])
+
     def test_crossing_into_1e10_uses_1e10_scale(self) -> None:
         view_min, view_max = _compute_draw_style_y_limits(0.0, 1.0e10)
         layout = _compute_matplotlib_y_axis_layout(view_min, view_max, 6)

@@ -131,6 +131,8 @@ def _update_area_add_series(
     axes = root.find(f'.//{{{SVG_NS}}}g[@id="axes_1"]')
     if axes is None:
         raise ValueError("SVG axes group not found.")
+    legend = root.find(f'.//{{{SVG_NS}}}g[@id="legend_1"]')
+    _remove_update_artifacts(axes, legend)
 
     areas = _extract_area_groups(axes)
     if not areas:
@@ -173,7 +175,8 @@ def _update_area_add_series(
     if label:
         legend, legend_items = _extract_legend_items(root, content)
         if legend is not None:
-            _append_legend_item(legend, legend_items, label, fill)
+            insert_idx = _legend_insert_index(areas, legend_items, y_ticks, values)
+            _append_legend_item(legend, legend_items, label, fill, insert_idx=insert_idx)
 
     svg_out, png_out = default_output_paths(svg_path, "area")
     target_svg = svg_output_path or svg_out
@@ -368,6 +371,15 @@ def _update_area_remove_series(
             matched_labels = [label]
     if not matched_labels:
         raise ValueError("No matching area series found in question.")
+    matched_labels = [
+        resolved
+        for label in matched_labels
+        for resolved in [_resolve_matching_label(label, labels)]
+        if resolved
+    ]
+    matched_labels = list(dict.fromkeys(matched_labels))
+    if not matched_labels:
+        raise ValueError("No matching area series found in question.")
     if len(matched_labels) > 1:
         delete_question = "；".join(f'删除类别 "{label}"' for label in matched_labels)
         return _run_area_ops_sequence(
@@ -385,7 +397,7 @@ def _update_area_remove_series(
 
     target_fill = None
     for item in legend_items:
-        if item.get("label") == label:
+        if _labels_match(str(item.get("label") or "").strip(), label):
             target_fill = item.get("fill")
             break
     if not target_fill:
@@ -698,6 +710,34 @@ def _has_delete_intent(question: str) -> bool:
     return bool(re.search(r"(delete|remove|drop|删|删除|去掉|移除|去除|剔除)", question, re.IGNORECASE))
 
 
+def _normalize_label_token(value: str) -> str:
+    text = str(value or "").strip().lower()
+    return text[1:] if text.startswith("@") else text
+
+
+def _labels_match(left: str, right: str) -> bool:
+    left_text = str(left or "").strip()
+    right_text = str(right or "").strip()
+    if not left_text or not right_text:
+        return False
+    if left_text.lower() == right_text.lower():
+        return True
+    return _normalize_label_token(left_text) == _normalize_label_token(right_text)
+
+
+def _resolve_matching_label(candidate: str, labels: list[str]) -> str | None:
+    text = str(candidate or "").strip()
+    if not text:
+        return None
+    for label in labels:
+        if str(label or "").strip().lower() == text.lower():
+            return label
+    for label in labels:
+        if _labels_match(text, label):
+            return label
+    return None
+
+
 def _match_label(question: str, labels: list[str]) -> str | None:
     matches = _match_labels(question, labels)
     return matches[0] if matches else None
@@ -707,7 +747,11 @@ def _match_labels(question: str, labels: list[str]) -> list[str]:
     lowered = question.lower()
     matches: list[str] = []
     for label in labels:
-        if label.lower() in lowered and label not in matches:
+        label_text = str(label or "").strip()
+        if not label_text:
+            continue
+        normalized = _normalize_label_token(label_text)
+        if (label_text.lower() in lowered or (normalized and normalized in lowered)) and label not in matches:
             matches.append(label)
     return matches
 
@@ -730,11 +774,7 @@ def _match_label_with_llm(question: str, labels: list[str], llm: Any) -> str | N
     label = payload.get("label")
     if not isinstance(label, str):
         return None
-    label_norm = label.strip().lower()
-    for candidate in labels:
-        if candidate.lower() == label_norm:
-            return candidate
-    return None
+    return _resolve_matching_label(label, labels)
 
 
 def _parse_year_value_update(
@@ -955,7 +995,12 @@ def _extract_legend_items(
 
 
 def _append_legend_item(
-    legend: ET.Element, items: list[dict[str, Any]], label: str, fill: str
+    legend: ET.Element,
+    items: list[dict[str, Any]],
+    label: str,
+    fill: str,
+    *,
+    insert_idx: int | None = None,
 ) -> None:
     metrics = _legend_entry_metrics(items)
     text_x, text_y = _legend_text_anchor(items)
@@ -974,7 +1019,7 @@ def _append_legend_item(
         step = _legend_step(items)
         next_y_min = last_y_max + step
 
-    patch = ET.SubElement(legend, f"{{{SVG_NS}}}g", {"id": "patch_update"})
+    patch = ET.Element(f"{{{SVG_NS}}}g", {"id": "patch_update"})
     path = ET.SubElement(patch, f"{{{SVG_NS}}}path")
     path.set(
         "d",
@@ -983,7 +1028,7 @@ def _append_legend_item(
     )
     path.set("style", f"fill: {fill}")
 
-    text_group = ET.SubElement(legend, f"{{{SVG_NS}}}g", {"id": "text_update"})
+    text_group = ET.Element(f"{{{SVG_NS}}}g", {"id": "text_update"})
     text_group.append(ET.Comment(f" {label} "))
     text = ET.SubElement(text_group, f"{{{SVG_NS}}}text")
     text.set("x", f"{text_x:.6f}")
@@ -992,6 +1037,26 @@ def _append_legend_item(
     text.set("font-family", "Times New Roman")
     text.set("fill", "#000000")
     text.text = label
+
+    if insert_idx is None or insert_idx >= len(items):
+        legend.append(patch)
+        legend.append(text_group)
+        return
+
+    anchor = items[insert_idx].get("patch") or items[insert_idx].get("text")
+    if anchor is None:
+        legend.append(patch)
+        legend.append(text_group)
+        return
+    children = list(legend)
+    try:
+        pos = children.index(anchor)
+    except ValueError:
+        legend.append(patch)
+        legend.append(text_group)
+        return
+    legend.insert(pos, patch)
+    legend.insert(pos + 1, text_group)
 
 
 def _legend_bounds(items: list[dict[str, Any]]) -> tuple[float | None, float | None, float, float]:
@@ -1162,12 +1227,51 @@ def _find_area_index(
     areas: list[dict[str, Any]],
 ) -> int | None:
     for item in legend_items:
-        if str(item.get("label") or "").strip() != label:
+        if not _labels_match(str(item.get("label") or "").strip(), label):
             continue
         fill = str(item.get("fill") or "").strip()
         if fill:
             return _find_area_by_fill(areas, fill)
     return None
+
+
+def _remove_update_artifacts(axes: ET.Element, legend: ET.Element | None) -> None:
+    for group in list(axes):
+        if str(group.get("id", "")) == "FillBetweenPolyCollection_update":
+            axes.remove(group)
+    if legend is None:
+        return
+    for child in list(legend):
+        if str(child.get("id", "")) in {"patch_update", "text_update"}:
+            legend.remove(child)
+
+
+def _legend_insert_index(
+    areas: list[dict[str, Any]],
+    legend_items: list[dict[str, Any]],
+    y_ticks: list[tuple[float, float]],
+    new_values: list[float],
+) -> int:
+    if not legend_items:
+        return 0
+
+    _, series_values = _area_series_values(areas, y_ticks)
+    avg_by_fill: dict[str, float] = {}
+    for area, values in zip(areas, series_values):
+        fill = str(area.get("fill") or "").strip().lower()
+        if not fill or not values:
+            continue
+        avg_by_fill[fill] = sum(values) / len(values)
+
+    new_avg = sum(new_values) / len(new_values) if new_values else 0.0
+    for idx, item in enumerate(legend_items):
+        fill = str(item.get("fill") or "").strip().lower()
+        existing_avg = avg_by_fill.get(fill)
+        if existing_avg is None:
+            continue
+        if new_avg <= existing_avg:
+            return idx
+    return len(legend_items)
 
 
 def _extract_structured_add_payload(

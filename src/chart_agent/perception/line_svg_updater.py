@@ -501,7 +501,7 @@ def _update_line_point(
     for label, year_value, update_value, mode in structured_changes:
         target_stroke = None
         for item in legend_items:
-            if item.get("label") == label:
+            if _labels_match(str(item.get("label") or ""), label):
                 target_stroke = item.get("stroke")
                 break
         if not target_stroke:
@@ -625,7 +625,8 @@ def _remove_line_series(
 
     strokes_by_label = {item.get("label"): item.get("stroke") for item in legend_items}
     for label in labels_to_remove:
-        target_stroke = strokes_by_label.get(label)
+        resolved_label = _resolve_matching_label(label, [str(key or "") for key in strokes_by_label])
+        target_stroke = strokes_by_label.get(resolved_label) if resolved_label else None
         if not target_stroke:
             raise ValueError("No matching legend color for selected series.")
         line_group = _find_line_by_stroke(axes, target_stroke)
@@ -633,7 +634,7 @@ def _remove_line_series(
             raise ValueError("No line series matches selected legend color.")
         axes.remove(line_group)
         if legend is not None:
-            _remove_legend_item(root, legend, legend_items, label)
+            _remove_legend_item(root, legend, legend_items, resolved_label or label)
 
     _rescale_line_chart_after_removal(root, axes, content, mapping_info)
     _remove_update_overlay(root)
@@ -673,16 +674,48 @@ def _has_year_update(question: str) -> bool:
 
 
 def _match_label(question: str, labels: list[str]) -> str | None:
-    lowered = question.lower()
+    matches = _match_labels(question, labels)
+    return matches[0] if matches else None
+
+
+def _normalize_label_token(value: str) -> str:
+    text = str(value or "").strip().lower()
+    return text[1:] if text.startswith("@") else text
+
+
+def _labels_match(left: str, right: str) -> bool:
+    left_text = str(left or "").strip()
+    right_text = str(right or "").strip()
+    if not left_text or not right_text:
+        return False
+    if left_text.lower() == right_text.lower():
+        return True
+    return _normalize_label_token(left_text) == _normalize_label_token(right_text)
+
+
+def _resolve_matching_label(candidate: str, labels: list[str]) -> str | None:
+    text = str(candidate or "").strip()
+    if not text:
+        return None
     for label in labels:
-        if label.lower() in lowered:
+        if str(label or "").strip().lower() == text.lower():
+            return label
+    for label in labels:
+        if _labels_match(text, label):
             return label
     return None
 
 
 def _match_labels(question: str, labels: list[str]) -> list[str]:
     lowered = question.lower()
-    matched = [label for label in labels if label.lower() in lowered]
+    matched = []
+    for label in labels:
+        label_text = str(label or "").strip()
+        if not label_text:
+            continue
+        normalized = _normalize_label_token(label_text)
+        if label_text.lower() in lowered or (normalized and normalized in lowered):
+            matched.append(label)
     if matched:
         return matched
     quoted = re.findall(r"[\"“”']([^\"“”']+)[\"“”']", question)
@@ -690,10 +723,9 @@ def _match_labels(question: str, labels: list[str]) -> list[str]:
         return []
     matched = []
     for quote in quoted:
-        for label in labels:
-            if label.lower() == quote.strip().lower():
-                matched.append(label)
-                break
+        resolved = _resolve_matching_label(quote, labels)
+        if resolved:
+            matched.append(resolved)
     return matched
 
 
@@ -715,14 +747,13 @@ def _match_labels_with_llm(question: str, labels: list[str], llm: Any) -> list[s
     raw = payload.get("labels", [])
     if not isinstance(raw, list):
         return []
-    normalized = {label.lower(): label for label in labels}
     out: list[str] = []
     for item in raw:
         if not isinstance(item, str):
             continue
-        key = item.strip().lower()
-        if key in normalized and normalized[key] not in out:
-            out.append(normalized[key])
+        resolved = _resolve_matching_label(item, labels)
+        if resolved and resolved not in out:
+            out.append(resolved)
     return out
 
 

@@ -148,9 +148,11 @@ def _extract_svg_features(svg_path: Path) -> dict[str, Any]:
         "numeric": numeric,
         "paths": paths,
         "area_top_boundary": _extract_area_top_boundary(_extract_area_paths(root)),
+        "area_gap_ratio": _extract_area_gap_ratio(_extract_area_paths(root)),
         "line_series": _extract_line_series(root),
         "line_styles": _extract_line_styles(root),
         "legend_labels": _extract_legend_labels(root),
+        "legend_label_counts": _extract_legend_label_counts(root),
         "y_axis_ticks": _extract_y_axis_ticks(root),
         "scatter_points": _extract_scatter_points(root),
     }
@@ -188,10 +190,22 @@ def _compare_area_svgs(
     pred_boundary = pred_features.get("area_top_boundary", [])
     gt_boundary = gt_features.get("area_top_boundary", [])
     boundary_score = _polyline_similarity(pred_boundary, gt_boundary)
+    pred_gap_ratio = _safe_float(pred_features.get("area_gap_ratio"), 0.0)
+    gt_gap_ratio = _safe_float(gt_features.get("area_gap_ratio"), 0.0)
+    gap_score = max(0.0, 1.0 - min(abs(pred_gap_ratio - gt_gap_ratio), 1.0))
     pred_labels = Counter(pred_features.get("legend_labels", []))
     gt_labels = Counter(gt_features.get("legend_labels", []))
     label_score = _counter_f1(pred_labels, gt_labels)
-    score = boundary_score * 0.80 + label_score * 0.20
+    duplicate_score = _counter_f1(
+        pred_features.get("legend_label_counts", Counter()),
+        gt_features.get("legend_label_counts", Counter()),
+    )
+    score = (
+        boundary_score * 0.55
+        + gap_score * 0.15
+        + label_score * 0.15
+        + duplicate_score * 0.15
+    )
     return {
         "ok": True,
         "chart_type": "area",
@@ -200,7 +214,11 @@ def _compare_area_svgs(
         "score": round(score, 4),
         "metrics": {
             "top_boundary_similarity": round(boundary_score, 4),
+            "gap_score": round(gap_score, 4),
+            "predicted_gap_ratio": round(pred_gap_ratio, 4),
+            "ground_truth_gap_ratio": round(gt_gap_ratio, 4),
             "label_score": round(label_score, 4),
+            "legend_count_score": round(duplicate_score, 4),
         },
         "predicted_summary": _feature_summary(pred_features),
         "ground_truth_summary": _feature_summary(gt_features),
@@ -418,6 +436,44 @@ def _extract_area_top_boundary(area_paths: list[list[tuple[float, float]]]) -> l
     return sorted(top_map.items(), key=lambda item: item[0])
 
 
+def _extract_area_gap_ratio(area_paths: list[list[tuple[float, float]]]) -> float:
+    intervals_by_x: dict[float, list[tuple[float, float]]] = {}
+    for points in area_paths:
+        bounds = _area_interval_by_x(points)
+        for x_val, interval in bounds.items():
+            intervals_by_x.setdefault(x_val, []).append(interval)
+
+    if not intervals_by_x:
+        return 0.0
+
+    gap_total = 0.0
+    span_total = 0.0
+    for x_val, intervals in intervals_by_x.items():
+        ordered = sorted(intervals, key=lambda item: (item[0], item[1]))
+        if not ordered:
+            continue
+        min_top = min(item[0] for item in ordered)
+        max_bottom = max(item[1] for item in ordered)
+        span = max_bottom - min_top
+        if span <= 0:
+            continue
+        span_total += span
+        merged: list[list[float]] = []
+        for top, bottom in ordered:
+            if not merged:
+                merged.append([top, bottom])
+                continue
+            prev = merged[-1]
+            if top <= prev[1]:
+                prev[1] = max(prev[1], bottom)
+            else:
+                gap_total += top - prev[1]
+                merged.append([top, bottom])
+    if span_total <= 0:
+        return 0.0
+    return gap_total / span_total
+
+
 def _extract_area_boundary(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     if len(points) < 4:
         return []
@@ -434,6 +490,16 @@ def _extract_area_boundary(points: list[tuple[float, float]]) -> list[tuple[floa
         if x_val not in top_map or y_val < top_map[x_val]:
             top_map[x_val] = y_val
     return sorted(top_map.items(), key=lambda item: item[0])
+
+
+def _area_interval_by_x(points: list[tuple[float, float]]) -> dict[float, tuple[float, float]]:
+    bounds: dict[float, list[float]] = {}
+    for x_val, y_val in points:
+        bounds.setdefault(x_val, []).append(y_val)
+    out: dict[float, tuple[float, float]] = {}
+    for x_val, ys in bounds.items():
+        out[x_val] = (min(ys), max(ys))
+    return out
 
 
 def _extract_line_series(root: ET.Element) -> list[list[tuple[float, float]]]:
@@ -489,41 +555,41 @@ def _extract_line_styles(root: ET.Element) -> list[dict[str, Any]]:
 
 
 def _extract_legend_labels(root: ET.Element) -> list[str]:
+    counts = _extract_legend_label_counts(root)
+    return list(counts.keys())
+
+
+def _extract_legend_label_counts(root: ET.Element) -> Counter[str]:
     legend = root.find(f'.//{{{SVG_NS}}}g[@id="legend_1"]')
     if legend is None:
-        return []
-    labels: list[str] = []
-    seen: set[str] = set()
+        return Counter()
+    labels: Counter[str] = Counter()
     for group in legend.findall(f'./{{{SVG_NS}}}g'):
         gid = str(group.get("id", ""))
         if not gid.startswith("text_"):
             for text_node in group.findall(f'./{{{SVG_NS}}}text'):
                 text = _normalize_text("".join(text_node.itertext()))
-                if text and text not in seen:
-                    labels.append(text)
-                    seen.add(text)
+                if text:
+                    labels[text] += 1
             continue
         extracted = False
         for child in list(group):
             if child.tag is ET.Comment:
                 text = _normalize_text(child.text)
-                if text and text not in seen:
-                    labels.append(text)
-                    seen.add(text)
+                if text:
+                    labels[text] += 1
                 extracted = True
                 break
         if extracted:
             continue
         for text_node in group.findall(f'./{{{SVG_NS}}}text'):
             text = _normalize_text("".join(text_node.itertext()))
-            if text and text not in seen:
-                labels.append(text)
-                seen.add(text)
+            if text:
+                labels[text] += 1
     for text_node in legend.findall(f'./{{{SVG_NS}}}text'):
         text = _normalize_text("".join(text_node.itertext()))
-        if text and text not in seen:
-            labels.append(text)
-            seen.add(text)
+        if text:
+            labels[text] += 1
     return labels
 
 

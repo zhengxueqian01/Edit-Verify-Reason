@@ -34,6 +34,9 @@ class AnswererClusterPromptTests(unittest.TestCase):
         self.assertIn("Image context: The requested chart update has already been applied.", llm.prompt[0].content)
         self.assertIn("For cluster-counting questions, follow the clustering rule stated in the question.", llm.prompt[0].content)
         self.assertIn("same category that are connected by enough intermediate points", llm.prompt[0].content)
+        self.assertIn("Do not treat each color/category as one cluster by default.", llm.prompt[0].content)
+        self.assertIn("judge the number of clusters by their spatial proximity, separation, and density", llm.prompt[0].content)
+        self.assertIn("same color can still form multiple clusters if they are spatially separated", llm.prompt[0].content)
 
         human_content = llm.prompt[1].content
         self.assertIsInstance(human_content, str)

@@ -1493,14 +1493,27 @@ def _merge_structured_with_existing_steps(
         if matches:
             existing = matches.pop(0)
             merged_step = dict(structured_step)
-            merged_step["operation_target"] = _merge_dict_like(
-                structured_step.get("operation_target"),
-                existing.get("operation_target"),
-            )
-            merged_step["data_change"] = _merge_dict_like(
-                structured_step.get("data_change"),
-                existing.get("data_change"),
-            )
+            if str(structured_step.get("operation") or "").strip().lower() == "change":
+                # Keep structured atomic change payloads authoritative so composite LLM
+                # payloads do not leak stale sibling updates into this step.
+                merged_step["operation_target"] = _merge_dict_like(
+                    existing.get("operation_target"),
+                    structured_step.get("operation_target"),
+                )
+                merged_step["data_change"] = dict(
+                    structured_step.get("data_change")
+                    if isinstance(structured_step.get("data_change"), dict)
+                    else {}
+                )
+            else:
+                merged_step["operation_target"] = _merge_dict_like(
+                    structured_step.get("operation_target"),
+                    existing.get("operation_target"),
+                )
+                merged_step["data_change"] = _merge_dict_like(
+                    structured_step.get("data_change"),
+                    existing.get("data_change"),
+                )
             merged_step["new_points"] = _coerce_points(existing.get("new_points", structured_step.get("new_points", [])))
             merged_step["question_hint"] = str(
                 existing.get("question_hint") or structured_step.get("question_hint") or ""

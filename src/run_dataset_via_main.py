@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input-dir",
         required=True,
-        help="Dataset folder path, e.g. dataset/task1-mix-area/add-change",
+        help="Dataset folder path, e.g. dataset/task1/add-change",
     )
     parser.add_argument("--qa-index", type=int, default=0, help="QA index from JSON QA list.")
     parser.add_argument(

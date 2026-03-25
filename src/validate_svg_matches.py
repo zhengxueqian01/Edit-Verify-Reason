@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-dir",
         default="",
-        help="Dataset folder used to resolve ground-truth SVGs, e.g. dataset/task2-line or dataset/task1-mix-area/add-change",
+        help="Dataset folder used to resolve ground-truth SVGs, e.g. dataset/task2-line or dataset/task1/add-change",
     )
     parser.add_argument("--limit", type=int, default=0, help="Max cases to validate in batch mode; 0 means all.")
     parser.add_argument(

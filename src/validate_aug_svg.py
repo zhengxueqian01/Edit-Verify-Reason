@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
         description="Validate predicted area SVGs against *_aug.svg ground truth."
     )
     parser.add_argument("--pred-root", help="Prediction run dir, e.g. output/dataset_records/.../run_xxx")
-    parser.add_argument("--gt-root", help="Ground-truth dataset dir, e.g. dataset/task1-mix-area/add-change")
+    parser.add_argument("--gt-root", help="Ground-truth dataset dir, e.g. dataset/task1/add-change")
     parser.add_argument("--pred-svg", help="Single predicted SVG path.")
     parser.add_argument("--gt-svg", help="Single ground-truth SVG path.")
     parser.add_argument("--tol", type=float, default=1e-2, help="Max absolute error tolerance per point.")

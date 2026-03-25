@@ -56,10 +56,17 @@ def iter_model_dirs(records_root: Path, selected_models: list[str]) -> list[Path
     return model_dirs
 
 
+def _resolve_task1_dataset_dir(operation: str) -> str:
+    for candidate in (f"task1/{operation}", f"task1-mix-area/{operation}"):
+        if (PROJECT_ROOT / "dataset" / candidate).exists():
+            return candidate
+    return f"task1/{operation}"
+
+
 def infer_dataset_dir(task_run_name: str) -> str:
     if task_run_name.startswith("task1_"):
         operation = task_run_name.removeprefix("task1_").rsplit("_", 2)[0]
-        return f"task1-mix-area/{operation}"
+        return _resolve_task1_dataset_dir(operation)
     if task_run_name.startswith("task2_"):
         operation = task_run_name.removeprefix("task2_").rsplit("_", 2)[0]
         return f"task2-line/{operation}"
@@ -68,8 +75,12 @@ def infer_dataset_dir(task_run_name: str) -> str:
     raise ValueError(f"Unsupported task run directory: {task_run_name}")
 
 
-def run_validation(pred_root: Path, dataset_dir: str, limit: int) -> dict[str, Any]:
-    out_path = (SVG_MATCH_ROOT / pred_root.relative_to(DATASET_RECORDS_ROOT)).with_suffix(".json")
+def build_output_path(pred_root: Path, records_root: Path) -> Path:
+    return (SVG_MATCH_ROOT / records_root.name / pred_root.relative_to(records_root)).with_suffix(".json")
+
+
+def run_validation(pred_root: Path, dataset_dir: str, limit: int, records_root: Path) -> dict[str, Any]:
+    out_path = build_output_path(pred_root, records_root)
     cmd = [
         sys.executable,
         "-m",
@@ -122,7 +133,7 @@ def main() -> None:
     for model_dir in model_dirs:
         for task_dir in sorted(path for path in model_dir.iterdir() if path.is_dir() and path.name.startswith("task")):
             dataset_dir = infer_dataset_dir(task_dir.name)
-            run_info = run_validation(task_dir, dataset_dir, args.limit)
+            run_info = run_validation(task_dir, dataset_dir, args.limit, records_root)
             entry = {
                 "model": model_dir.name,
                 "task_run": task_dir.name,

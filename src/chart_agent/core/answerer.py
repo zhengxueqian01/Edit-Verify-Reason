@@ -11,7 +11,12 @@ ANSWER_SYSTEM_PROMPT = (
     'Schema: {"answer": string, "confidence": number between 0 and 1, "reason": [string]}\n'
     "For cluster-counting questions, follow the clustering rule stated in the question.\n"
     "If the chart distinguishes categories/colors, points of the same category that are connected by enough intermediate "
-    "points should be treated as one cluster when that satisfies the DBSCAN conditions in the question."
+    "points should be treated as one cluster when that satisfies the DBSCAN conditions in the question.\n"
+    "Do not treat each color/category as one cluster by default.\n"
+    "Use color/category only to decide which points belong to the same category, then judge the number of clusters by "
+    "their spatial proximity, separation, and density in the chart.\n"
+    "When answering, pay attention to both color/category membership and spatial relationships; points with the same "
+    "color can still form multiple clusters if they are spatially separated."
 )
 
 
