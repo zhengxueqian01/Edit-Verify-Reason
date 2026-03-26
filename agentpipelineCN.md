@@ -154,6 +154,26 @@ perception 也不是只做一次。
 
 后面的执行阶段真正消费的，就是这串步骤。
 
+在当前实现里，如果 `SVG_UPDATE_MODE=htn`，这一层还会进入更明确的分层任务规划形式。
+
+也就是说，系统不再只是“先产出一版扁平 step list，再在后面修补一下”，而是会对候选更新步骤再做一轮轻量、领域化的 HTN 分解。
+
+这条 HTN 链路大致是：
+
+1. 从根任务 `handle_chart_update` 开始
+2. 先选择 chart-type 对应的方法，比如 `select_line_update_method`、`select_area_update_method`、`select_scatter_update_method`
+3. 再把更新按操作族分解成 `delete`、`add`、`change`、`unknown`
+4. 如果某个操作还是复合的，比如一次 delete 里有多个类别、一次 change 里有多个年份和值，再继续拆成原子任务
+5. 最后再发射成执行器真正消费的 runnable steps
+
+所以在 `htn` 模式下，规划阶段不只是“把 step 写清楚”，而是显式组织成：
+
+- 图表类型层分解
+- 操作族层分解
+- 原子 step 发射
+
+这仍然是一个轻量、领域化的 HTN，不是通用符号规划器，但它已经比原来的扁平 step 整理更接近真正的任务级规划。
+
 如果只回答“step 到底在哪个环节拆出来”，答案应该是：
 
 - 请求拆分负责分出 update 和 QA
@@ -173,12 +193,13 @@ perception 也不是只做一次。
 - planner 本身已经会产出一版 `steps`
 - 如果 `SVG_UPDATE_MODE=llm`，代码里会把它规范化成 `llm_intent`
 - 在这种模式下，系统会额外再跑一次基于 perception 的 step 重写逻辑
+- 如果 `SVG_UPDATE_MODE=htn`，系统会把候选 steps 再送进一轮分层分解，然后得到最终 `resolved_steps`
 
 所以从代码角度说，“step 在哪一层产生”并不是只有一次回答：
 
 - 第一次是在 planner
 - 第二次是可选的 `llm_intent` step rewrite
-- 最后 `step 构造` 再负责补齐、合并和展开原子步骤
+- 最后 `step 构造` 再负责把它们定稿；在 rules 路径里是补齐、合并和展开，在 htn 路径里则是通过分层任务树发射最终步骤
 
 ### 可选的 Step Rewrite（代码里叫 llm_intent）
 
@@ -257,6 +278,25 @@ perception 也不是只做一次。
 这些都可能被展开成顺序明确的小 step。
 
 它的目的，是让执行面对的是一列清晰、可落地的动作，而不是一条大而模糊的总命令。
+
+在当前代码里，这个“定稿”已经不再只有一种实现方式。
+
+现在主要有两条路径：
+
+- `rules` 路径：把 planner 结果、structured payload 和 fallback 文本解释合并，然后展开成原子 step
+- `htn` 路径：先把 candidate steps 组织成分层任务树，再从任务树里发射 `resolved_steps`
+
+所以现在说 `step 构造`，更准确的含义是：
+
+- 把前面规划阶段得到的各种更新证据
+- 转成执行器真正要消费的最终步骤列表
+
+至于是通过：
+
+- 扁平规则展开
+- 还是分层 HTN 分解
+
+本质上都属于这个执行前定稿阶段。
 
 所以从语义意义上说，这一层并不是和“问题分解”完全分开的。它是前面 update 分解思路在执行视角下的延续：
 

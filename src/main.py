@@ -15,6 +15,7 @@ if PROJECT_SRC not in sys.path:
 
 from chart_agent.config import get_svg_update_mode, resolve_task_model_config
 from chart_agent.core.perception_graph import run_perception
+from chart_agent.core.htn_planner import HtnMethod, HtnTask, decompose_tasks
 from chart_agent.core.trace import append_trace
 from chart_agent.core.answerer import answer_question
 from chart_agent.core.vision_tool_phase import run_visual_tool_phase
@@ -185,7 +186,13 @@ def run_main(
             update_mode=svg_update_mode,
         )
         last_operation_plan = operation_plan
-        plan_steps = _operation_steps_from_plan(operation_plan, planned_question, structured_context)
+        plan_steps = _operation_steps_from_plan(
+            operation_plan,
+            planned_question,
+            structured_context,
+            chart_type=str(chart_type),
+            update_mode=svg_update_mode,
+        )
         has_executable_plan = bool(plan_steps)
         if not operation_plan.get("llm_success") and not has_executable_plan:
             failure_info = _classify_plan_failure("llm planning failed")
@@ -239,6 +246,7 @@ def run_main(
                 operation_plan=operation_plan,
                 structured_context=structured_context,
                 chart_type=chart_type,
+                update_mode=svg_update_mode,
                 llm=executor_llm,
                 planner_llm=planner_llm,
                 used_scatter_points=used_scatter_points,
@@ -1511,7 +1519,7 @@ def _coerce_steps(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _operation_steps_from_plan(
+def _operation_step_candidates_from_plan(
     operation_plan: dict[str, Any],
     planned_question: str,
     structured_context: dict[str, Any],
@@ -1520,27 +1528,387 @@ def _operation_steps_from_plan(
     if isinstance(steps, list) and steps:
         enriched_steps = _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
         if _llm_steps_cover_structured_ops(enriched_steps, structured_context, planned_question):
-            return _prune_redundant_component_steps(_expand_composite_steps(enriched_steps))
+            return enriched_steps
     structured_steps = _build_structured_steps(structured_context, operation_plan, planned_question)
     if structured_steps:
         if isinstance(steps, list) and steps:
             enriched_steps = _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
-            return _prune_redundant_component_steps(
-                _expand_composite_steps(_merge_structured_with_existing_steps(structured_steps, enriched_steps))
-            )
-        return _prune_redundant_component_steps(_expand_composite_steps(structured_steps))
+            return _merge_structured_with_existing_steps(structured_steps, enriched_steps)
+        return structured_steps
     if isinstance(steps, list) and steps:
-        return _prune_redundant_component_steps(_expand_composite_steps(
-            _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
-        ))
-    return _prune_redundant_component_steps(_expand_composite_steps([
+        return _enrich_llm_steps_with_structured_data(steps, structured_context, planned_question)
+    return [
         {
             "operation": _infer_single_operation_from_text(planned_question),
             "question": planned_question,
             "question_hint": planned_question,
             "new_points": operation_plan.get("new_points", []),
         }
-    ]))
+    ]
+
+
+def _operation_steps_from_rules_plan(
+    operation_plan: dict[str, Any],
+    planned_question: str,
+    structured_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    candidate_steps = _operation_step_candidates_from_plan(
+        operation_plan,
+        planned_question,
+        structured_context,
+    )
+    return _prune_redundant_component_steps(_expand_composite_steps(candidate_steps))
+
+
+def _operation_steps_from_htn_plan(
+    operation_plan: dict[str, Any],
+    planned_question: str,
+    structured_context: dict[str, Any],
+    chart_type: str = "",
+) -> list[dict[str, Any]]:
+    candidate_steps = _operation_step_candidates_from_plan(
+        operation_plan,
+        planned_question,
+        structured_context,
+    )
+    root_task = HtnTask(
+        "handle_chart_update",
+        {
+            "chart_type": str(chart_type or "").strip().lower(),
+            "candidate_steps": candidate_steps,
+            "planned_question": planned_question,
+            "structured_context": structured_context,
+        },
+    )
+    methods = _build_domain_htn_methods()
+    htn_result = decompose_tasks(root_task, methods=methods, operator_names={"emit_step"})
+    emitted_steps = [dict(item.get("step") or {}) for item in htn_result.operators]
+    resolved_steps = _prune_redundant_component_steps(emitted_steps)
+    operation_plan["planning_form"] = "htn"
+    operation_plan["htn_chart_type"] = str(chart_type or "").strip().lower() or "generic"
+    operation_plan["htn_trace"] = htn_result.trace
+    operation_plan["candidate_steps"] = [dict(step) for step in candidate_steps]
+    operation_plan["resolved_steps"] = [dict(step) for step in resolved_steps]
+    return resolved_steps
+
+
+def _operation_steps_from_plan(
+    operation_plan: dict[str, Any],
+    planned_question: str,
+    structured_context: dict[str, Any],
+    *,
+    chart_type: str = "",
+    update_mode: str = "rules",
+) -> list[dict[str, Any]]:
+    if update_mode == "htn":
+        return _operation_steps_from_htn_plan(
+            operation_plan,
+            planned_question,
+            structured_context,
+            chart_type=chart_type,
+        )
+    operation_plan["planning_form"] = "rules"
+    return _operation_steps_from_rules_plan(operation_plan, planned_question, structured_context)
+
+
+def _build_domain_htn_methods() -> list[HtnMethod]:
+    return [
+        HtnMethod(
+            task_name="handle_chart_update",
+            name="select_line_update_method",
+            condition=lambda task: _htn_chart_type(task) == "line",
+            expand=lambda task: [HtnTask("plan_line_update", dict(task.payload))],
+        ),
+        HtnMethod(
+            task_name="handle_chart_update",
+            name="select_area_update_method",
+            condition=lambda task: _htn_chart_type(task) == "area",
+            expand=lambda task: [HtnTask("plan_area_update", dict(task.payload))],
+        ),
+        HtnMethod(
+            task_name="handle_chart_update",
+            name="select_scatter_update_method",
+            condition=lambda task: _htn_chart_type(task) == "scatter",
+            expand=lambda task: [HtnTask("plan_scatter_update", dict(task.payload))],
+        ),
+        HtnMethod(
+            task_name="handle_chart_update",
+            name="select_generic_update_method",
+            condition=lambda task: True,
+            expand=lambda task: [HtnTask("plan_generic_update", dict(task.payload))],
+        ),
+        HtnMethod(
+            task_name="plan_line_update",
+            name="decompose_line_update",
+            condition=_htn_has_candidate_steps,
+            expand=_htn_expand_chart_update,
+        ),
+        HtnMethod(
+            task_name="plan_area_update",
+            name="decompose_area_update",
+            condition=_htn_has_candidate_steps,
+            expand=_htn_expand_chart_update,
+        ),
+        HtnMethod(
+            task_name="plan_scatter_update",
+            name="decompose_scatter_update",
+            condition=_htn_has_candidate_steps,
+            expand=_htn_expand_chart_update,
+        ),
+        HtnMethod(
+            task_name="plan_generic_update",
+            name="decompose_generic_update",
+            condition=_htn_has_candidate_steps,
+            expand=_htn_expand_chart_update,
+        ),
+        HtnMethod(
+            task_name="plan_delete_family",
+            name="expand_delete_family",
+            condition=lambda task: bool(_htn_family_steps(task)),
+            expand=lambda task: _htn_expand_family_steps(task, "plan_delete_step"),
+        ),
+        HtnMethod(
+            task_name="plan_add_family",
+            name="expand_add_family",
+            condition=lambda task: bool(_htn_family_steps(task)),
+            expand=lambda task: _htn_expand_family_steps(task, "plan_add_step"),
+        ),
+        HtnMethod(
+            task_name="plan_change_family",
+            name="expand_change_family",
+            condition=lambda task: bool(_htn_family_steps(task)),
+            expand=lambda task: _htn_expand_family_steps(task, "plan_change_step"),
+        ),
+        HtnMethod(
+            task_name="plan_unknown_family",
+            name="expand_unknown_family",
+            condition=lambda task: bool(_htn_family_steps(task)),
+            expand=lambda task: _htn_expand_family_steps(task, "plan_unknown_step"),
+        ),
+        HtnMethod(
+            task_name="plan_delete_step",
+            name="split_delete_targets",
+            condition=_htn_step_is_composite_delete,
+            expand=lambda task: _htn_expand_delete_step(task, child_task_name="plan_delete_step"),
+        ),
+        HtnMethod(
+            task_name="plan_delete_step",
+            name="emit_delete_step",
+            condition=lambda task: isinstance(task.payload.get("step"), dict),
+            expand=_htn_emit_typed_step,
+        ),
+        HtnMethod(
+            task_name="plan_add_step",
+            name="emit_add_step",
+            condition=lambda task: isinstance(task.payload.get("step"), dict),
+            expand=_htn_emit_typed_step,
+        ),
+        HtnMethod(
+            task_name="plan_change_step",
+            name="split_change_targets",
+            condition=_htn_step_is_composite_change,
+            expand=lambda task: _htn_expand_change_step(task, child_task_name="plan_change_step"),
+        ),
+        HtnMethod(
+            task_name="plan_change_step",
+            name="emit_change_step",
+            condition=lambda task: isinstance(task.payload.get("step"), dict),
+            expand=_htn_emit_typed_step,
+        ),
+        HtnMethod(
+            task_name="plan_unknown_step",
+            name="emit_unknown_step",
+            condition=lambda task: isinstance(task.payload.get("step"), dict),
+            expand=_htn_emit_typed_step,
+        ),
+    ]
+
+
+def _htn_chart_type(task: HtnTask) -> str:
+    return str(task.payload.get("chart_type") or "").strip().lower()
+
+
+def _htn_has_candidate_steps(task: HtnTask) -> bool:
+    candidate_steps = task.payload.get("candidate_steps")
+    return isinstance(candidate_steps, list) and any(isinstance(step, dict) for step in candidate_steps)
+
+
+def _htn_expand_chart_update(task: HtnTask) -> list[HtnTask]:
+    candidate_steps = [
+        dict(step)
+        for step in task.payload.get("candidate_steps", [])
+        if isinstance(step, dict)
+    ]
+    sequence = _htn_operation_family_sequence(
+        candidate_steps,
+        task.payload.get("structured_context"),
+        str(task.payload.get("planned_question") or ""),
+    )
+    grouped_steps = _group_candidate_steps_by_operation(candidate_steps)
+    children: list[HtnTask] = []
+    for operation in sequence:
+        family_steps = grouped_steps.get(operation, [])
+        if not family_steps:
+            continue
+        family_task_name = {
+            "delete": "plan_delete_family",
+            "add": "plan_add_family",
+            "change": "plan_change_family",
+        }.get(operation, "plan_unknown_family")
+        children.append(
+            HtnTask(
+                family_task_name,
+                {
+                    "chart_type": _htn_chart_type(task),
+                    "operation": operation,
+                    "steps": [dict(step) for step in family_steps],
+                },
+            )
+        )
+    return children
+
+
+def _htn_operation_family_sequence(
+    candidate_steps: list[dict[str, Any]],
+    structured_context: Any,
+    planned_question: str,
+) -> list[str]:
+    ordered: list[str] = []
+
+    def append(token: str) -> None:
+        normalized = _normalize_operation_token(token) or ("unknown" if token == "unknown" else "")
+        if normalized and normalized not in ordered:
+            ordered.append(normalized)
+
+    if isinstance(structured_context, dict):
+        for token in _expected_structured_ops(structured_context, planned_question):
+            append(token)
+
+    has_unknown = False
+    for step in candidate_steps:
+        token = _normalize_operation_token(str(step.get("operation") or ""))
+        if token:
+            append(token)
+            continue
+        has_unknown = True
+
+    if has_unknown or not ordered:
+        append("unknown")
+    return ordered
+
+
+def _group_candidate_steps_by_operation(candidate_steps: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for step in candidate_steps:
+        operation = _normalize_operation_token(str(step.get("operation") or "")) or "unknown"
+        grouped.setdefault(operation, []).append(dict(step))
+    return grouped
+
+
+def _htn_family_steps(task: HtnTask) -> list[dict[str, Any]]:
+    steps = task.payload.get("steps")
+    if not isinstance(steps, list):
+        return []
+    return [dict(step) for step in steps if isinstance(step, dict)]
+
+
+def _htn_expand_family_steps(task: HtnTask, child_task_name: str) -> list[HtnTask]:
+    children: list[HtnTask] = []
+    for step in _htn_family_steps(task):
+        children.append(
+            HtnTask(
+                child_task_name,
+                {
+                    "chart_type": _htn_chart_type(task),
+                    "step": dict(step),
+                },
+            )
+        )
+    return children
+
+
+def _htn_emit_typed_step(task: HtnTask) -> list[HtnTask]:
+    step = task.payload.get("step")
+    if not isinstance(step, dict):
+        return []
+    return [HtnTask("emit_step", {"step": dict(step)})]
+
+
+def _htn_step_is_composite_delete(task: HtnTask) -> bool:
+    step = task.payload.get("step")
+    if not isinstance(step, dict):
+        return False
+    if str(step.get("operation") or "").strip().lower() != "delete":
+        return False
+    operation_target = step.get("operation_target") if isinstance(step.get("operation_target"), dict) else {}
+    explicit_label = str(operation_target.get("category_name") or "").strip()
+    explicit_labels = operation_target.get("category_names")
+    if explicit_label and not explicit_labels:
+        return False
+    labels = _structured_delete_labels(
+        operation_target,
+        step.get("data_change") if isinstance(step.get("data_change"), dict) else {},
+    )
+    return len(labels) > 1
+
+
+def _htn_expand_delete_step(task: HtnTask, *, child_task_name: str) -> list[HtnTask]:
+    step = task.payload.get("step")
+    if not isinstance(step, dict):
+        return []
+    operation_target = step.get("operation_target") if isinstance(step.get("operation_target"), dict) else {}
+    data_change = step.get("data_change") if isinstance(step.get("data_change"), dict) else {}
+    labels = _structured_delete_labels(operation_target, data_change)
+    children: list[HtnTask] = []
+    for label in labels:
+        split_step = dict(step)
+        split_step["operation_target"] = {"category_name": label}
+        split_step["data_change"] = {"del": {"category_name": label}}
+        children.append(
+            HtnTask(
+                child_task_name,
+                {
+                    "chart_type": _htn_chart_type(task),
+                    "step": split_step,
+                },
+            )
+        )
+    return children
+
+
+def _htn_step_is_composite_change(task: HtnTask) -> bool:
+    step = task.payload.get("step")
+    if not isinstance(step, dict):
+        return False
+    if str(step.get("operation") or "").strip().lower() != "change":
+        return False
+    atomic_changes = _atomic_changes_from_step(step.get("operation_target"), step.get("data_change"))
+    return len(atomic_changes) > 1
+
+
+def _htn_expand_change_step(task: HtnTask, *, child_task_name: str) -> list[HtnTask]:
+    step = task.payload.get("step")
+    if not isinstance(step, dict):
+        return []
+    atomic_changes = _atomic_changes_from_step(step.get("operation_target"), step.get("data_change"))
+    children: list[HtnTask] = []
+    for change in atomic_changes:
+        if not isinstance(change, dict):
+            continue
+        split_step = dict(step)
+        label = str(change.get("category_name") or "").strip()
+        split_step["operation_target"] = {"category_name": label} if label else {}
+        split_step["data_change"] = {"changes": [change]}
+        children.append(
+            HtnTask(
+                child_task_name,
+                {
+                    "chart_type": _htn_chart_type(task),
+                    "step": split_step,
+                },
+            )
+        )
+    return children
 
 
 def _step_match_key(step: dict[str, Any]) -> tuple[str, str, str]:
@@ -2518,6 +2886,7 @@ def _replan_current_step(
     *,
     step: dict[str, Any],
     chart_type: str,
+    update_mode: str = "rules",
     llm: Any,
     retry_hint: str,
 ) -> dict[str, Any]:
@@ -2531,7 +2900,13 @@ def _replan_current_step(
         step_context["data_change"] = dict(data_change)
 
     operation_plan = _llm_plan_update(step_question, chart_type, llm, retry_hint=retry_hint)
-    replanned_steps = _operation_steps_from_plan(operation_plan, step_question, step_context)
+    replanned_steps = _operation_steps_from_plan(
+        operation_plan,
+        step_question,
+        step_context,
+        chart_type=chart_type,
+        update_mode=update_mode,
+    )
     if not replanned_steps:
         return dict(step)
 
@@ -2561,12 +2936,19 @@ def _execute_planned_steps(
     operation_plan: dict[str, Any],
     structured_context: dict[str, Any],
     chart_type: str,
+    update_mode: str = "rules",
     llm: Any,
     planner_llm: Any,
     used_scatter_points: list[dict[str, float]],
     event_callback: Any | None = None,
 ) -> tuple[str | None, list[dict[str, Any]], list[dict[str, Any]], Any, list[dict[str, float]]]:
-    steps = _operation_steps_from_plan(operation_plan, planned_question, structured_context)
+    steps = _operation_steps_from_plan(
+        operation_plan,
+        planned_question,
+        structured_context,
+        chart_type=chart_type,
+        update_mode=update_mode,
+    )
     step_logs: list[dict[str, Any]] = []
     perception_steps: list[dict[str, Any]] = []
     current_svg = str(inputs["svg_path"])
@@ -2692,6 +3074,7 @@ def _execute_planned_steps(
                 step = _replan_current_step(
                     step=step,
                     chart_type=chart_type,
+                    update_mode=update_mode,
                     llm=planner_llm,
                     retry_hint=str(failure_info.get("retry_hint") or exc),
                 )

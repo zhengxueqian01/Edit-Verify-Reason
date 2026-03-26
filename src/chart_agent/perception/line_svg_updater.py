@@ -100,7 +100,10 @@ def _add_line_series(
     if len(x_ticks) < 2 or len(y_ticks) < 2:
         raise ValueError("Insufficient axis ticks for line mapping.")
 
-    values, llm_meta = _parse_values(question, llm)
+    label, values = _extract_structured_line_add_payload(operation_target, data_change)
+    llm_meta = None
+    if not values:
+        values, llm_meta = _parse_values(question, llm)
     if llm_meta:
         mapping_info["llm_meta"] = llm_meta
     if not values:
@@ -140,11 +143,6 @@ def _add_line_series(
     line_path.set("d", _format_path(points_svg))
     _draw_line_markers(axes, points_svg, stroke, enabled=use_markers)
 
-    label = str((operation_target or {}).get("category_name") or "").strip()
-    if not label and isinstance(data_change, dict):
-        add_block = data_change.get("add") if isinstance(data_change.get("add"), dict) else data_change
-        if isinstance(add_block, dict):
-            label = str(add_block.get("category_name") or add_block.get("category") or "").strip()
     if not label:
         label = _extract_series_label(question)
     if not label and llm is not None:
@@ -814,6 +812,33 @@ def _extract_structured_line_delete_labels(
                 if text and text not in labels:
                     labels.append(text)
     return labels
+
+
+def _extract_structured_line_add_payload(
+    operation_target: dict[str, Any] | None,
+    data_change: dict[str, Any] | None,
+) -> tuple[str, list[float]]:
+    payload = data_change if isinstance(data_change, dict) else {}
+    add_block = payload.get("add") if isinstance(payload.get("add"), dict) else payload
+    if not isinstance(add_block, dict):
+        return "", []
+    label = str(
+        add_block.get("category_name")
+        or add_block.get("category")
+        or (operation_target or {}).get("category_name")
+        or (operation_target or {}).get("add_category")
+        or ""
+    ).strip()
+    raw_values = add_block.get("values")
+    if not isinstance(raw_values, list):
+        return label, []
+    values: list[float] = []
+    for value in raw_values:
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return label, values
 
 
 def _extract_structured_line_changes(

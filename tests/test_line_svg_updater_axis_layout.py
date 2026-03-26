@@ -254,6 +254,58 @@ class LineSvgAxisLayoutTests(unittest.TestCase):
 
         tmpdir.cleanup()
 
+    def test_update_line_svg_add_uses_structured_values_when_question_has_no_numbers(self) -> None:
+        content = """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="axes_1">
+                <g id="line2d_1">
+                  <path d="M 0 90 L 10 80 L 20 70" style="fill: none; stroke: #111111; stroke-width: 2" />
+                </g>
+              </g>
+              <g id="legend_1">
+                <g id="line_1"><path d="M 0 0 L 5 0" style="fill: none; stroke: #111111; stroke-width: 2" /></g>
+                <g id="text_1"><!-- Base --><g transform="translate(30 20) scale(0.1 -0.1)"></g></g>
+              </g>
+            </svg>
+        """
+        tmpdir, svg_path = self._write_temp_svg(content)
+        out_svg = Path(tmpdir.name) / "out.svg"
+        out_png = Path(tmpdir.name) / "out.png"
+        mapping_info = {
+            "x_ticks": [(0.0, 1953.0), (10.0, 1954.0), (20.0, 1955.0)],
+            "y_ticks": [(100.0, 0.0), (0.0, 100.0)],
+        }
+
+        with patch("chart_agent.perception.line_svg_updater.render_svg_to_png", return_value=str(out_png)):
+            result = update_line_svg(
+                str(svg_path),
+                "Add the category Harbor Network.",
+                mapping_info,
+                output_path=str(out_png),
+                svg_output_path=str(out_svg),
+                llm=None,
+                operation_target={"category_name": "Harbor Network"},
+                data_change={
+                    "add": {
+                        "category_name": "Harbor Network",
+                        "years": ["1953", "1954", "1955"],
+                        "values": [32.53, 36.0, 40.85],
+                    }
+                },
+                operation="add",
+            )
+
+        self.assertEqual(result, str(out_png))
+        self.assertTrue(out_svg.exists())
+        root = ET.parse(out_svg).getroot()
+        update_path = root.find(
+            './/{http://www.w3.org/2000/svg}g[@id="line2d_update"]/{http://www.w3.org/2000/svg}path'
+        )
+        self.assertIsNotNone(update_path)
+        assert update_path is not None
+        self.assertIn("M", update_path.get("d", ""))
+        tmpdir.cleanup()
+
     def test_resolve_line_ops_prefers_structured_change_payload(self) -> None:
         ops = _resolve_line_ops(
             'Operation: change\nData change: {"changes": [{"category_name": "A", "year_values": {"0": 15}}]}',

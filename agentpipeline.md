@@ -148,6 +148,26 @@ So a request such as “delete one category, then add another one, then answer a
 
 That step sequence is what later execution consumes.
 
+In the current implementation, update planning can now also run in a more explicit hierarchical form when `SVG_UPDATE_MODE=htn`.
+
+In that mode, the system no longer treats planning as only “produce one flat step list and then clean it up”.
+
+Instead, it applies a small domain HTN over the candidate update steps:
+
+1. start from a root task such as `handle_chart_update`
+2. choose a chart-specific method such as `select_line_update_method`, `select_area_update_method`, or `select_scatter_update_method`
+3. decompose the chart update into operation families such as `delete`, `add`, `change`, and `unknown`
+4. further decompose composite operations into atomic tasks, such as splitting one delete that names multiple categories or one change that touches multiple year-value pairs
+5. emit the final runnable steps consumed by the executor
+
+So in `htn` mode, the planner is not only normalizing steps. It is explicitly organizing update execution as:
+
+- chart-type-level decomposition
+- operation-family decomposition
+- atomic-step emission
+
+This is still a lightweight, domain-specific HTN rather than a general symbolic planner, but it makes the planning structure much more explicit than the older flat step pass.
+
 If the question is simply "where are the steps actually split out?", the answer is:
 
 - request splitting separates update from QA
@@ -159,12 +179,13 @@ In the current implementation, there is one more detail:
 - the planner already produces one version of `steps`
 - if `SVG_UPDATE_MODE=llm`, the code normalizes that mode to `llm_intent`
 - in that mode, the system runs one extra perception-aware step rewriting pass
+- if `SVG_UPDATE_MODE=htn`, the system takes candidate steps and runs a hierarchical decomposition pass before execution
 
 So from the code’s point of view, there is not just one place where steps appear:
 
 - first in the planner
 - then optionally in `llm_intent` step rewrite
-- then finally in step construction, which fills gaps, merges structured payloads, and expands atomic steps
+- then finally in step construction, which either fills gaps and expands steps in the rules path, or emits resolved steps through HTN decomposition in the `htn` path
 
 ## 7. Optional Step Rewrite (called llm_intent in code)
 
@@ -236,6 +257,18 @@ This stage also expands composite requests into atomic actions when needed.
 For example, a request that conceptually contains multiple deletions or multiple independent value changes may be converted into a sequence of smaller executable steps.
 
 The purpose is to ensure that execution runs on a clean, ordered list of concrete actions rather than on one large ambiguous instruction.
+
+In the current codebase, this finalization is no longer only one flat merge-and-expand pass.
+
+There are now two main ways the runnable step list is finalized:
+
+- in the `rules` path, structured payloads, planner steps, and fallback text interpretation are merged and expanded into atomic steps
+- in the `htn` path, those candidate steps are first organized into a hierarchical task tree, then emitted as `resolved_steps`
+
+So “step construction” now means the last execution-facing stage that turns all earlier planning evidence into the actual runnable steps, regardless of whether that happens through:
+
+- flat rule-based expansion
+- hierarchical HTN decomposition
 
 So this stage is not separate from decomposition in spirit. It is the execution-oriented continuation of decomposition:
 

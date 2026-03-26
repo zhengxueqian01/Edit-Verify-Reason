@@ -203,7 +203,9 @@ def _normalize_svg_update_mode(mode: str | None) -> str:
     normalized = str(mode or "rules").strip().lower()
     if normalized == "llm":
         return "llm_intent"
-    if normalized in {"rules", "llm_intent"}:
+    if normalized in {"hierarchical", "hier", "htn"}:
+        return "htn"
+    if normalized in {"rules", "llm_intent", "htn"}:
         return normalized
     return "rules"
 
