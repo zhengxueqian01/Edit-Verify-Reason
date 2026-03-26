@@ -47,6 +47,28 @@ def _parse_args() -> argparse.Namespace:
 
 SUPPORTED_SVG_CHART_TYPES = {"scatter", "line", "area"}
 TOOL_AUG_CONFIDENCE_THRESHOLD = 0.85
+STEP_REPLAN_RETRIES = 1
+
+
+class _StepExecutionError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        step_logs: list[dict[str, Any]],
+        perception_steps: list[dict[str, Any]],
+        last_state: Any,
+        scatter_points: list[dict[str, float]],
+        failure_info: dict[str, Any],
+        failed_step: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.step_logs = list(step_logs)
+        self.perception_steps = list(perception_steps)
+        self.last_state = last_state
+        self.scatter_points = list(scatter_points)
+        self.failure_info = dict(failure_info)
+        self.failed_step = dict(failed_step) if isinstance(failed_step, dict) else None
 
 
 def run_main(
@@ -166,10 +188,12 @@ def run_main(
         plan_steps = _operation_steps_from_plan(operation_plan, planned_question, structured_context)
         has_executable_plan = bool(plan_steps)
         if not operation_plan.get("llm_success") and not has_executable_plan:
+            failure_info = _classify_plan_failure("llm planning failed")
             render_check = {
                 "ok": False,
                 "confidence": 0.0,
                 "issues": ["llm_plan_failed"],
+                "failure_info": failure_info,
             }
             attempt_logs.append(
                 {
@@ -179,6 +203,7 @@ def run_main(
                     "planned_question": planned_question,
                     "output_image_path": None,
                     "render_check": render_check,
+                    "failure_info": failure_info,
                 }
             )
             last_output_image = None
@@ -215,14 +240,22 @@ def run_main(
                 structured_context=structured_context,
                 chart_type=chart_type,
                 llm=executor_llm,
+                planner_llm=planner_llm,
                 used_scatter_points=used_scatter_points,
                 event_callback=event_callback,
             )
-        except Exception as exc:
+        except _StepExecutionError as exc:
+            step_logs = exc.step_logs
+            perception_steps = exc.perception_steps
+            if exc.last_state is not None:
+                last_state = exc.last_state
+            used_scatter_points = exc.scatter_points
+            last_perception_steps = perception_steps
             render_check = {
                 "ok": False,
                 "confidence": 0.0,
                 "issues": [f"operation_step_failed: {exc}"],
+                "failure_info": exc.failure_info,
             }
             attempt_logs.append(
                 {
@@ -233,6 +266,60 @@ def run_main(
                     "output_image_path": None,
                     "step_logs": step_logs,
                     "render_check": render_check,
+                    "failure_info": exc.failure_info,
+                    "failed_step": exc.failed_step,
+                }
+            )
+            last_output_image = None
+            last_render_check = render_check
+            _emit_event(
+                event_callback,
+                "render_check_done",
+                {
+                    "attempt": attempt,
+                    "chart_type": chart_type,
+                    "result": {
+                        "question_split": split_info,
+                        "operation_plan": operation_plan,
+                        "render_check": render_check,
+                        "attempt_logs": attempt_logs,
+                        "perception_steps": perception_steps,
+                        "update_question": update_question,
+                        "qa_question": qa_question,
+                        "resolved_data_change": structured_context.get("data_change", {}),
+                        "operation_text": split_info.get("operation_text") or update_question,
+                    },
+                },
+            )
+            retry_hint = str(exc)
+            continue
+        except Exception as exc:
+            failure_info = _build_failure_info(
+                failure_type="execution_error",
+                failure_stage="step_execute",
+                retryable=True,
+                retry_hint=str(exc),
+                replan_strategy="restart_attempt",
+                message=str(exc),
+                exception_type=type(exc).__name__,
+                chart_type=chart_type,
+            )
+            render_check = {
+                "ok": False,
+                "confidence": 0.0,
+                "issues": [f"operation_step_failed: {exc}"],
+                "failure_info": failure_info,
+            }
+            attempt_logs.append(
+                {
+                    "attempt": attempt,
+                    "chart_type": chart_type,
+                    "operation_plan": operation_plan,
+                    "planned_question": planned_question,
+                    "output_image_path": None,
+                    "step_logs": step_logs,
+                    "render_check": render_check,
+                    "failure_info": failure_info,
                 }
             )
             last_output_image = None
@@ -267,6 +354,8 @@ def run_main(
             llm=executor_llm,
             svg_perception_mode=svg_perception_mode,
         )
+        if not render_check.get("ok"):
+            render_check["failure_info"] = _classify_render_failure(render_check)
         append_trace(
             state.trace,
             node="render_check",
@@ -2296,6 +2385,175 @@ def _validation_context_from_mapping(mapping_info: Any) -> dict[str, Any]:
     return context
 
 
+def _build_failure_info(
+    *,
+    failure_type: str,
+    failure_stage: str,
+    retryable: bool,
+    retry_hint: str,
+    replan_strategy: str,
+    message: str,
+    exception_type: str = "",
+    chart_type: str = "",
+    operation: str = "",
+) -> dict[str, Any]:
+    return {
+        "failure_type": str(failure_type or "").strip() or "unknown_failure",
+        "failure_stage": str(failure_stage or "").strip() or "unknown_stage",
+        "retryable": bool(retryable),
+        "retry_hint": str(retry_hint or message or "").strip(),
+        "replan_strategy": str(replan_strategy or "").strip() or "stop_attempt",
+        "message": str(message or "").strip(),
+        "exception_type": str(exception_type or "").strip(),
+        "chart_type": str(chart_type or "").strip(),
+        "operation": str(operation or "").strip(),
+    }
+
+
+def _classify_step_failure(
+    *,
+    exc: Exception,
+    chart_type: str,
+    step: dict[str, Any],
+) -> dict[str, Any]:
+    message = str(exc).strip() or exc.__class__.__name__
+    lowered = message.lower()
+    failure_type = "execution_error"
+    retryable = True
+    replan_strategy = "replan_current_step"
+
+    if "unsupported chart type" in lowered:
+        failure_type = "unsupported_chart_type"
+        retryable = False
+        replan_strategy = "stop_attempt"
+    elif "cannot remove the only remaining area series" in lowered:
+        failure_type = "operation_conflict"
+        retryable = False
+        replan_strategy = "stop_attempt"
+    elif "svg missing" in lowered or "file does not exist" in lowered:
+        failure_type = "input_missing"
+        retryable = False
+        replan_strategy = "restart_attempt"
+    elif (
+        "axes group not found" in lowered
+        or "axes_1 missing" in lowered
+        or "stacked area collections found" in lowered
+        or "update group missing" in lowered
+    ):
+        failure_type = "chart_structure_missing"
+        retryable = False
+        replan_strategy = "restart_attempt"
+    elif "insufficient" in lowered and ("ticks" in lowered or "mapping" in lowered or "x grid" in lowered):
+        failure_type = "mapping_incomplete"
+        retryable = False
+        replan_strategy = "restart_attempt"
+    elif (
+        "no matching" in lowered
+        or "target missing" in lowered
+        or "series missing" in lowered
+        or "legend color" in lowered
+        or "path not found" in lowered
+        or "matches selected" in lowered
+    ):
+        failure_type = "target_not_found"
+        retryable = True
+        replan_strategy = "replan_current_step"
+    elif (
+        "scatter points missing" in lowered
+        or "no valid" in lowered
+        or "cannot parse" in lowered
+        or "no new points" in lowered
+        or "no new series values" in lowered
+    ):
+        failure_type = "step_data_invalid"
+        retryable = True
+        replan_strategy = "replan_current_step"
+
+    return _build_failure_info(
+        failure_type=failure_type,
+        failure_stage="step_execute",
+        retryable=retryable,
+        retry_hint=message,
+        replan_strategy=replan_strategy,
+        message=message,
+        exception_type=type(exc).__name__,
+        chart_type=chart_type,
+        operation=str(step.get("operation") or ""),
+    )
+
+
+def _classify_render_failure(render_check: dict[str, Any]) -> dict[str, Any]:
+    issues = [str(issue).strip() for issue in render_check.get("issues", []) if str(issue).strip()]
+    retry_hint = "; ".join(issues[:4]) or "render validation failed"
+    failure_type = "render_validation_failed"
+    if any("output image not found" in issue.lower() or "no output image path" in issue.lower() for issue in issues):
+        failure_type = "render_output_missing"
+    elif any("image appears empty" in issue.lower() for issue in issues):
+        failure_type = "render_output_empty"
+    elif any("programmatic:" in issue.lower() for issue in issues):
+        failure_type = "render_programmatic_mismatch"
+    return _build_failure_info(
+        failure_type=failure_type,
+        failure_stage="render_validate",
+        retryable=True,
+        retry_hint=retry_hint,
+        replan_strategy="restart_attempt",
+        message=retry_hint,
+    )
+
+
+def _classify_plan_failure(reason: str) -> dict[str, Any]:
+    message = str(reason or "").strip() or "llm planning failed"
+    return _build_failure_info(
+        failure_type="planning_failed",
+        failure_stage="plan",
+        retryable=True,
+        retry_hint=message,
+        replan_strategy="restart_attempt",
+        message=message,
+    )
+
+
+def _replan_current_step(
+    *,
+    step: dict[str, Any],
+    chart_type: str,
+    llm: Any,
+    retry_hint: str,
+) -> dict[str, Any]:
+    step_question = _render_structured_step_question(step)
+    step_context: dict[str, Any] = {}
+    operation_target = step.get("operation_target")
+    data_change = step.get("data_change")
+    if isinstance(operation_target, dict) and operation_target:
+        step_context["operation_target"] = dict(operation_target)
+    if isinstance(data_change, dict) and data_change:
+        step_context["data_change"] = dict(data_change)
+
+    operation_plan = _llm_plan_update(step_question, chart_type, llm, retry_hint=retry_hint)
+    replanned_steps = _operation_steps_from_plan(operation_plan, step_question, step_context)
+    if not replanned_steps:
+        return dict(step)
+
+    candidate = replanned_steps[0]
+    replanned = dict(step)
+    op = str(candidate.get("operation") or "").strip().lower()
+    if op and op != "unknown":
+        replanned["operation"] = op
+
+    question = str(candidate.get("question") or "").strip()
+    if question:
+        replanned["question"] = question
+    question_hint = str(candidate.get("question_hint") or question).strip()
+    if question_hint:
+        replanned["question_hint"] = question_hint
+
+    replanned["operation_target"] = _merge_dict_like(step.get("operation_target"), candidate.get("operation_target"))
+    replanned["data_change"] = _merge_dict_like(step.get("data_change"), candidate.get("data_change"))
+    replanned["new_points"] = _coerce_points(candidate.get("new_points", step.get("new_points", [])))
+    return replanned
+
+
 def _execute_planned_steps(
     *,
     inputs: dict[str, Any],
@@ -2304,6 +2562,7 @@ def _execute_planned_steps(
     structured_context: dict[str, Any],
     chart_type: str,
     llm: Any,
+    planner_llm: Any,
     used_scatter_points: list[dict[str, float]],
     event_callback: Any | None = None,
 ) -> tuple[str | None, list[dict[str, Any]], list[dict[str, Any]], Any, list[dict[str, float]]]:
@@ -2315,30 +2574,34 @@ def _execute_planned_steps(
     output_image = None
     scatter_points = list(used_scatter_points)
 
-    for idx, step in enumerate(steps):
-        step_q = _render_structured_step_question(step)
-        _emit_event(
-            event_callback,
-            "step_started",
-            {
-                "step": {
-                    "index": idx + 1,
-                    "operation": step.get("operation"),
-                    "question": step_q,
-                    "question_hint": step.get("question_hint"),
-                    "operation_target": step.get("operation_target"),
-                    "data_change": step.get("data_change"),
-                }
-            },
-        )
-        step_inputs = dict(inputs)
-        step_inputs["svg_path"] = current_svg
-        step_inputs["question"] = step_q
-        state = run_perception(step_inputs)
-        last_state = state
-        perception_steps.append(
-            {
+    for idx, original_step in enumerate(steps):
+        step = dict(original_step)
+        step_retry_history: list[dict[str, Any]] = []
+        for step_attempt in range(1, STEP_REPLAN_RETRIES + 2):
+            step_q = _render_structured_step_question(step)
+            _emit_event(
+                event_callback,
+                "step_started",
+                {
+                    "step": {
+                        "index": idx + 1,
+                        "step_attempt": step_attempt,
+                        "operation": step.get("operation"),
+                        "question": step_q,
+                        "question_hint": step.get("question_hint"),
+                        "operation_target": step.get("operation_target"),
+                        "data_change": step.get("data_change"),
+                    }
+                },
+            )
+            step_inputs = dict(inputs)
+            step_inputs["svg_path"] = current_svg
+            step_inputs["question"] = step_q
+            state = run_perception(step_inputs)
+            last_state = state
+            current_perception_step = {
                 "index": idx + 1,
+                "step_attempt": step_attempt,
                 "operation": step.get("operation"),
                 "question": step_q,
                 "question_hint": step.get("question_hint"),
@@ -2346,88 +2609,129 @@ def _execute_planned_steps(
                 "data_change": step.get("data_change"),
                 "perception": _sanitize_perception(state.perception),
             }
-        )
-        mapping_info = state.perception.get("mapping_info", {})
-        update_spec = state.perception.get("update_spec", {})
-        if isinstance(mapping_info, dict) and isinstance(update_spec, dict):
-            mapping_info = dict(mapping_info)
-            mapping_info["requested_point_color"] = _extract_scatter_requested_color(
-                step=step,
-                update_spec=update_spec,
-            )
-        step_svg, step_png = _step_paths(str(inputs["svg_path"]), chart_type, idx, len(steps))
+            mapping_info = state.perception.get("mapping_info", {})
+            update_spec = state.perception.get("update_spec", {})
+            if isinstance(mapping_info, dict) and isinstance(update_spec, dict):
+                mapping_info = dict(mapping_info)
+                mapping_info["requested_point_color"] = _extract_scatter_requested_color(
+                    step=step,
+                    update_spec=update_spec,
+                )
+            step_svg, step_png = _step_paths(str(inputs["svg_path"]), chart_type, idx, len(steps))
+            next_scatter_points = list(scatter_points)
 
-        if chart_type == "scatter":
-            points = _coerce_points(step.get("new_points", []))
-            if not points:
-                points = _coerce_points(operation_plan.get("new_points", []))
-            if not points:
-                points = _points_from_data_change(step.get("data_change", {}))
-            if not points:
-                raise ValueError(f"step {idx+1}: scatter points missing")
-            scatter_points = points
-            output_image = update_scatter_svg(
-                current_svg,
-                points,
-                mapping_info,
-                output_path=step_png,
-                svg_output_path=step_svg,
-                chart_type=chart_type,
-                question=step_q,
-                llm=llm,
-            )
-        elif chart_type == "line":
-            output_image = update_line_svg(
-                current_svg,
-                step_q,
-                mapping_info,
-                output_path=step_png,
-                svg_output_path=step_svg,
-                llm=llm,
-                operation_target=step.get("operation_target"),
-                data_change=step.get("data_change"),
-                operation=str(step.get("operation") or ""),
-            )
-        elif chart_type == "area":
-            output_image = update_area_svg(
-                current_svg,
-                step_q,
-                mapping_info,
-                output_path=step_png,
-                svg_output_path=step_svg,
-                llm=llm,
-                operation_target=step.get("operation_target"),
-                data_change=step.get("data_change"),
-            )
-        else:
-            raise ValueError(f"unsupported chart type: {chart_type}")
+            try:
+                if chart_type == "scatter":
+                    points = _coerce_points(step.get("new_points", []))
+                    if not points:
+                        points = _coerce_points(operation_plan.get("new_points", []))
+                    if not points:
+                        points = _points_from_data_change(step.get("data_change", {}))
+                    if not points:
+                        raise ValueError(f"step {idx+1}: scatter points missing")
+                    next_scatter_points = points
+                    output_image = update_scatter_svg(
+                        current_svg,
+                        points,
+                        mapping_info,
+                        output_path=step_png,
+                        svg_output_path=step_svg,
+                        chart_type=chart_type,
+                        question=step_q,
+                        llm=llm,
+                    )
+                elif chart_type == "line":
+                    output_image = update_line_svg(
+                        current_svg,
+                        step_q,
+                        mapping_info,
+                        output_path=step_png,
+                        svg_output_path=step_svg,
+                        llm=llm,
+                        operation_target=step.get("operation_target"),
+                        data_change=step.get("data_change"),
+                        operation=str(step.get("operation") or ""),
+                    )
+                elif chart_type == "area":
+                    output_image = update_area_svg(
+                        current_svg,
+                        step_q,
+                        mapping_info,
+                        output_path=step_png,
+                        svg_output_path=step_svg,
+                        llm=llm,
+                        operation_target=step.get("operation_target"),
+                        data_change=step.get("data_change"),
+                    )
+                else:
+                    raise ValueError(f"unsupported chart type: {chart_type}")
+            except Exception as exc:
+                failure_info = _classify_step_failure(exc=exc, chart_type=chart_type, step=step)
+                failed_step = dict(current_perception_step)
+                failed_step["input_svg_path"] = step_inputs["svg_path"]
+                failed_step["failure_info"] = failure_info
+                if step_retry_history:
+                    failed_step["retry_history"] = list(step_retry_history)
+                if step_attempt >= STEP_REPLAN_RETRIES + 1 or not failure_info.get("retryable"):
+                    raise _StepExecutionError(
+                        f"step {idx+1}: {exc}",
+                        step_logs=step_logs,
+                        perception_steps=perception_steps,
+                        last_state=last_state,
+                        scatter_points=scatter_points,
+                        failure_info=failure_info,
+                        failed_step=failed_step,
+                    ) from exc
+                step_retry_history.append(
+                    {
+                        "step_attempt": step_attempt,
+                        "question": step_q,
+                        "failure_info": failure_info,
+                    }
+                )
+                step = _replan_current_step(
+                    step=step,
+                    chart_type=chart_type,
+                    llm=planner_llm,
+                    retry_hint=str(failure_info.get("retry_hint") or exc),
+                )
+                continue
 
-        current_svg = step_svg or current_svg
-        step_logs.append(
-            {
-                "index": idx + 1,
-                "operation": step.get("operation"),
-                "question": step_q,
-                "input_svg_path": step_inputs["svg_path"],
-                "operation_target": step.get("operation_target"),
-                "data_change": step.get("data_change"),
-                "new_points": _coerce_points(scatter_points if chart_type == "scatter" else step.get("new_points", [])),
-                "validation_context": _validation_context_from_mapping(mapping_info),
-                "output_svg_path": step_svg,
-                "output_image_path": output_image,
-            }
-        )
-        _emit_event(
-            event_callback,
-            "step_finished",
-            {
-                "step": perception_steps[-1],
-                "step_log": step_logs[-1],
-                "perception_steps": perception_steps,
-                "step_logs": step_logs,
-                "output_image_path": output_image,
-            },
-        )
+            current_svg = step_svg or current_svg
+            scatter_points = next_scatter_points
+            step_logs.append(
+                {
+                    "index": idx + 1,
+                    "step_attempt": step_attempt,
+                    "operation": step.get("operation"),
+                    "question": step_q,
+                    "input_svg_path": step_inputs["svg_path"],
+                    "operation_target": step.get("operation_target"),
+                    "data_change": step.get("data_change"),
+                    "new_points": _coerce_points(
+                        scatter_points if chart_type == "scatter" else step.get("new_points", [])
+                    ),
+                    "validation_context": _validation_context_from_mapping(mapping_info),
+                    "output_svg_path": step_svg,
+                    "output_image_path": output_image,
+                    "retry_history": list(step_retry_history),
+                }
+            )
+            if step_retry_history:
+                current_perception_step["retry_history"] = list(step_retry_history)
+            perception_steps.append(current_perception_step)
+            _emit_event(
+                event_callback,
+                "step_finished",
+                {
+                    "step": perception_steps[-1],
+                    "step_log": step_logs[-1],
+                    "perception_steps": perception_steps,
+                    "step_logs": step_logs,
+                    "output_image_path": output_image,
+                },
+            )
+            break
 
     return output_image, step_logs, perception_steps, last_state, scatter_points
 

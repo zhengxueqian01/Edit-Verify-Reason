@@ -15,6 +15,44 @@ from chart_agent.prompts.prompt import build_visual_tool_planner_prompt
 
 TOOL_SPECS: list[dict[str, Any]] = [
     {
+        "name": "add_point",
+        "description": "Draw a point marker at SVG coordinate.",
+        "args": {
+            "x": "number",
+            "y": "number",
+            "radius": "number, optional, default 3",
+            "color": "string hex color, optional, default #ff2d55",
+            "label": "string, optional",
+        },
+    },
+    {
+        "name": "draw_line",
+        "description": "Draw a line segment between two SVG coordinates.",
+        "args": {
+            "x1": "number",
+            "y1": "number",
+            "x2": "number",
+            "y2": "number",
+            "width": "number, optional, default 1.6",
+            "color": "string hex color, optional, default #ff9500",
+            "label": "string, optional",
+        },
+    },
+    {
+        "name": "highlight_rect",
+        "description": "Highlight a rectangle region in SVG coordinates.",
+        "args": {
+            "x1": "number",
+            "y1": "number",
+            "x2": "number",
+            "y2": "number",
+            "width": "number, optional, default 1.2",
+            "color": "string hex color, optional, default #007aff",
+            "fill_opacity": "number 0-1, optional, default 0.08",
+            "label": "string, optional",
+        },
+    },
+    {
         "name": "isolate_color_topology",
         "description": (
             "For scatter charts, add same-color background halos behind target-color points. "
@@ -362,6 +400,9 @@ def _coerce_tool_calls(
         tool = str(item.get("tool") or "").strip()
         args = item.get("args", {})
         if tool not in {
+            "add_point",
+            "draw_line",
+            "highlight_rect",
             "isolate_color_topology",
             "isolate_all_color_topologies",
             "highlight_top_boundary",
@@ -397,6 +438,76 @@ def _normalize_tool_call(
     canvas_width: float,
     canvas_height: float,
 ) -> tuple[dict[str, Any] | None, str | None]:
+    if tool == "add_point":
+        x = _clamp(_as_float(args.get("x"), 0.0), 0.0, canvas_width)
+        y = _clamp(_as_float(args.get("y"), 0.0), 0.0, canvas_height)
+        radius = _clamp(_as_float(args.get("radius"), 3.0), 0.8, 8.0)
+        return (
+            {
+                "tool": tool,
+                "args": {
+                    "x": round(x, 3),
+                    "y": round(y, 3),
+                    "radius": round(radius, 3),
+                    "color": _safe_color(args.get("color"), "#ff2d55"),
+                    "label": _short_text(str(args.get("label") or "").strip(), 28),
+                },
+            },
+            None,
+        )
+    if tool == "draw_line":
+        x1 = _clamp(_as_float(args.get("x1"), 0.0), 0.0, canvas_width)
+        y1 = _clamp(_as_float(args.get("y1"), 0.0), 0.0, canvas_height)
+        x2 = _clamp(_as_float(args.get("x2"), 0.0), 0.0, canvas_width)
+        y2 = _clamp(_as_float(args.get("y2"), 0.0), 0.0, canvas_height)
+        length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+        if length < 2.0:
+            return None, "line_too_short"
+        return (
+            {
+                "tool": tool,
+                "args": {
+                    "x1": round(x1, 3),
+                    "y1": round(y1, 3),
+                    "x2": round(x2, 3),
+                    "y2": round(y2, 3),
+                    "width": round(_clamp(_as_float(args.get("width"), 1.6), 0.6, 4.0), 3),
+                    "color": _safe_color(args.get("color"), "#ff9500"),
+                    "label": _short_text(str(args.get("label") or "").strip(), 28),
+                },
+            },
+            None,
+        )
+    if tool == "highlight_rect":
+        x1 = _clamp(_as_float(args.get("x1"), 0.0), 0.0, canvas_width)
+        y1 = _clamp(_as_float(args.get("y1"), 0.0), 0.0, canvas_height)
+        x2 = _clamp(_as_float(args.get("x2"), 0.0), 0.0, canvas_width)
+        y2 = _clamp(_as_float(args.get("y2"), 0.0), 0.0, canvas_height)
+        left, right = sorted((x1, x2))
+        top, bottom = sorted((y1, y2))
+        width = right - left
+        height = bottom - top
+        if width < 2.0 or height < 2.0:
+            return None, "rect_too_small"
+        area_ratio = (width * height) / max(canvas_width * canvas_height, 1.0)
+        if area_ratio > 0.6:
+            return None, "rect_too_large"
+        return (
+            {
+                "tool": tool,
+                "args": {
+                    "x1": round(left, 3),
+                    "y1": round(top, 3),
+                    "x2": round(right, 3),
+                    "y2": round(bottom, 3),
+                    "width": round(_clamp(_as_float(args.get("width"), 1.2), 0.6, 4.0), 3),
+                    "color": _safe_color(args.get("color"), "#007aff"),
+                    "fill_opacity": round(_clamp(_as_float(args.get("fill_opacity"), 0.08), 0.0, 0.25), 4),
+                    "label": _short_text(str(args.get("label") or "").strip(), 28),
+                },
+            },
+            None,
+        )
     if tool == "isolate_color_topology":
         target_color = _normalize_color_selector(args.get("target_color"))
         if not target_color:
@@ -498,7 +609,13 @@ def _execute_svg_tool_calls(
         tool = str(call.get("tool") or "")
         args = call.get("args", {}) if isinstance(call.get("args"), dict) else {}
         try:
-            if tool == "isolate_color_topology":
+            if tool == "add_point":
+                _svg_add_point(overlay, ns, args, canvas_w, canvas_h)
+            elif tool == "draw_line":
+                _svg_draw_line(overlay, ns, args, canvas_w, canvas_h)
+            elif tool == "highlight_rect":
+                _svg_highlight_rect(overlay, ns, args, canvas_w, canvas_h)
+            elif tool == "isolate_color_topology":
                 _svg_isolate_color_topology(
                     root,
                     overlay,
@@ -539,6 +656,97 @@ def _execute_svg_tool_calls(
         "augmented_svg_path": str(out_svg),
         "augmented_image_path": str(out_svg),
     }
+
+
+def _svg_add_point(overlay: ET.Element, ns: str, args: dict[str, Any], w: float, h: float) -> None:
+    x = _clamp(_as_float(args.get("x"), 0.0), 0.0, w)
+    y = _clamp(_as_float(args.get("y"), 0.0), 0.0, h)
+    r = _clamp(_as_float(args.get("radius"), 3.0), 0.8, 8.0)
+    color = _safe_color(args.get("color"), "#ff2d55")
+
+    ET.SubElement(
+        overlay,
+        _nstag(ns, "circle"),
+        {
+            "cx": f"{x:.6f}",
+            "cy": f"{y:.6f}",
+            "r": f"{r:.6f}",
+            "fill": color,
+            "fill-opacity": "0.88",
+            "stroke": "#000000",
+            "stroke-width": "0.6",
+        },
+    )
+
+    label = _short_text(str(args.get("label") or "").strip(), 28)
+    if label:
+        _svg_text(overlay, ns, x + r + 2, y - r - 1, label, "#111111", 9.5)
+
+
+def _svg_draw_line(overlay: ET.Element, ns: str, args: dict[str, Any], w: float, h: float) -> None:
+    x1 = _clamp(_as_float(args.get("x1"), 0.0), 0.0, w)
+    y1 = _clamp(_as_float(args.get("y1"), 0.0), 0.0, h)
+    x2 = _clamp(_as_float(args.get("x2"), 0.0), 0.0, w)
+    y2 = _clamp(_as_float(args.get("y2"), 0.0), 0.0, h)
+    width = _clamp(_as_float(args.get("width"), 1.6), 0.6, 4.0)
+    color = _safe_color(args.get("color"), "#ff9500")
+
+    ET.SubElement(
+        overlay,
+        _nstag(ns, "line"),
+        {
+            "x1": f"{x1:.6f}",
+            "y1": f"{y1:.6f}",
+            "x2": f"{x2:.6f}",
+            "y2": f"{y2:.6f}",
+            "stroke": color,
+            "stroke-opacity": "0.92",
+            "stroke-width": f"{width:.6f}",
+            "stroke-linecap": "round",
+        },
+    )
+
+    label = _short_text(str(args.get("label") or "").strip(), 28)
+    if label:
+        _svg_text(overlay, ns, (x1 + x2) / 2.0 + 2, (y1 + y2) / 2.0 - 2, label, "#111111", 9.5)
+
+
+def _svg_highlight_rect(overlay: ET.Element, ns: str, args: dict[str, Any], w: float, h: float) -> None:
+    x1 = _clamp(_as_float(args.get("x1"), 0.0), 0.0, w)
+    y1 = _clamp(_as_float(args.get("y1"), 0.0), 0.0, h)
+    x2 = _clamp(_as_float(args.get("x2"), 0.0), 0.0, w)
+    y2 = _clamp(_as_float(args.get("y2"), 0.0), 0.0, h)
+    left, right = sorted((x1, x2))
+    top, bottom = sorted((y1, y2))
+    width = _clamp(_as_float(args.get("width"), 1.2), 0.6, 4.0)
+    color = _safe_color(args.get("color"), "#007aff")
+    fill_opacity = _clamp(_as_float(args.get("fill_opacity"), 0.08), 0.0, 0.25)
+
+    area_ratio = ((right - left) * (bottom - top)) / max(1.0, (w * h))
+    if area_ratio > 0.35:
+        fill_opacity = 0.0
+    elif area_ratio > 0.18:
+        fill_opacity = min(fill_opacity, 0.05)
+
+    ET.SubElement(
+        overlay,
+        _nstag(ns, "rect"),
+        {
+            "x": f"{left:.6f}",
+            "y": f"{top:.6f}",
+            "width": f"{(right - left):.6f}",
+            "height": f"{(bottom - top):.6f}",
+            "fill": color,
+            "fill-opacity": f"{fill_opacity:.4f}",
+            "stroke": color,
+            "stroke-opacity": "0.92",
+            "stroke-width": f"{width:.6f}",
+        },
+    )
+
+    label = _short_text(str(args.get("label") or "").strip(), 28)
+    if label:
+        _svg_text(overlay, ns, left + 2, top + 11, label, "#111111", 9.5)
 
 
 def _svg_text(
@@ -914,6 +1122,13 @@ def _parse_svg_length(value: Any) -> float:
         return float(m.group(1))
     except Exception:
         return 0.0
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:

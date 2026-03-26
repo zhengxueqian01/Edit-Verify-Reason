@@ -67,34 +67,52 @@ class VisionToolPhaseTests(unittest.TestCase):
 
         self.assertEqual(updated, [{"tool": "isolate_all_color_topologies", "args": {}}])
 
-    def test_removed_markup_tools_are_rejected(self) -> None:
+    def test_markup_tools_are_accepted(self) -> None:
         calls, rejected = _coerce_tool_calls(
             [
-                {"tool": "add_point", "args": {"x": 1, "y": 2}},
-                {"tool": "draw_line", "args": {"x1": 1, "y1": 2, "x2": 3, "y2": 4}},
-                {"tool": "highlight_rect", "args": {"x1": 1, "y1": 2, "x2": 3, "y2": 4}},
+                {"tool": "add_point", "args": {"x": 1, "y": 2, "radius": 4}},
+                {"tool": "draw_line", "args": {"x1": 1, "y1": 2, "x2": 13, "y2": 14}},
+                {"tool": "highlight_rect", "args": {"x1": 1, "y1": 2, "x2": 13, "y2": 14}},
             ],
             canvas_width=100,
             canvas_height=100,
         )
 
-        self.assertEqual(calls, [])
         self.assertEqual(
-            rejected,
+            calls,
             [
-                {"tool": "add_point", "args": {"x": 1, "y": 2}, "reason": "unknown_tool"},
+                {
+                    "tool": "add_point",
+                    "args": {"x": 1.0, "y": 2.0, "radius": 4.0, "color": "#ff2d55", "label": ""},
+                },
                 {
                     "tool": "draw_line",
-                    "args": {"x1": 1, "y1": 2, "x2": 3, "y2": 4},
-                    "reason": "unknown_tool",
+                    "args": {
+                        "x1": 1.0,
+                        "y1": 2.0,
+                        "x2": 13.0,
+                        "y2": 14.0,
+                        "width": 1.6,
+                        "color": "#ff9500",
+                        "label": "",
+                    },
                 },
                 {
                     "tool": "highlight_rect",
-                    "args": {"x1": 1, "y1": 2, "x2": 3, "y2": 4},
-                    "reason": "unknown_tool",
-                },
+                    "args": {
+                        "x1": 1.0,
+                        "y1": 2.0,
+                        "x2": 13.0,
+                        "y2": 14.0,
+                        "width": 1.2,
+                        "color": "#007aff",
+                        "fill_opacity": 0.08,
+                        "label": "",
+                    },
+                }
             ],
         )
+        self.assertEqual(rejected, [])
 
     def test_non_scatter_tools_are_unchanged(self) -> None:
         calls = [{"tool": "isolate_color_topology", "args": {"target_color": "red"}}]
