@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any
 
+from chart_agent.prompts.prompt import build_question_parser_prompt
+
 _POINT_PATTERN = re.compile(r"\((-?\d+(?:\.\d+)?)[\s,]+(-?\d+(?:\.\d+)?)\)")
 _BRACKET_PAIR_PATTERN = re.compile(
     r"\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]"
@@ -110,13 +112,7 @@ def _parse_with_regex(question: str) -> dict[str, Any]:
 
 
 def _parse_with_llm(question: str, llm: Any) -> dict[str, Any] | None:
-    prompt = (
-        "You are parsing a chart-update request. "
-        "Identify any explicit numeric updates in the question. "
-        "Return JSON only with keys: new_points (list of {x,y}), point_color (string), issues (list). "
-        "If the chart type is unclear or not scatter, leave new_points empty and add a note in issues."
-        f"\nQuestion: {question}"
-    )
+    prompt = build_question_parser_prompt(question=question)
     try:
         response = llm.invoke(prompt)
     except Exception:

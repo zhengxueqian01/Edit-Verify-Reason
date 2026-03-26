@@ -6,6 +6,8 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any
 
+from chart_agent.prompts.prompt import build_line_update_parse_prompt
+
 from PIL import Image, ImageDraw
 
 SVG_NS = "http://www.w3.org/2000/svg"
@@ -95,12 +97,7 @@ def _parse_values(question: str, llm: Any | None) -> tuple[list[float], dict[str
 def _parse_with_llm(
     question: str, llm: Any
 ) -> tuple[list[float], dict[str, Any]] | None:
-    prompt = (
-        "You are parsing a line chart update. "
-        "Extract the new series values in order. "
-        "Return JSON only with keys: values (list of numbers)."
-        f"\nQuestion: {question}"
-    )
+    prompt = build_line_update_parse_prompt(question=question)
     try:
         response = llm.invoke(prompt)
     except Exception:

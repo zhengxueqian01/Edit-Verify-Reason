@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 from typing import Any
 
 from chart_agent.perception.svg_renderer import default_output_paths, render_svg_to_png
+from chart_agent.prompts.prompt import build_area_update_parse_prompt
 
 SVG_NS = "http://www.w3.org/2000/svg"
 
@@ -469,7 +470,7 @@ def _update_area_year_point(
 
     legend, legend_items = _extract_legend_items(root, content)
     labels = [item["label"] for item in legend_items if item.get("label")]
-    structured_changes = _extract_structured_changes(data_change)
+    structured_changes = _extract_structured_changes(operation_target, data_change)
     if not structured_changes:
         parsed = _parse_year_value_update(question, labels, llm)
         if parsed is None:
@@ -559,12 +560,7 @@ def _has_year_update(question: str) -> bool:
 def _parse_with_llm(
     question: str, llm: Any
 ) -> tuple[list[float], dict[str, Any]] | None:
-    prompt = (
-        "You are parsing a stacked area chart update. "
-        "Extract the new series values in order. "
-        "Return JSON only with keys: values (list of numbers)."
-        f"\nQuestion: {question}"
-    )
+    prompt = build_area_update_parse_prompt(question=question)
     try:
         response = llm.invoke(prompt)
     except Exception:
@@ -711,6 +707,10 @@ def _normalize_label_token(value: str) -> str:
     return text[1:] if text.startswith("@") else text
 
 
+def _normalize_label_fuzzy_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", _normalize_label_token(value))
+
+
 def _labels_match(left: str, right: str) -> bool:
     left_text = str(left or "").strip()
     right_text = str(right or "").strip()
@@ -731,6 +731,12 @@ def _resolve_matching_label(candidate: str, labels: list[str]) -> str | None:
     for label in labels:
         if _labels_match(text, label):
             return label
+    fuzzy_candidate = _normalize_label_fuzzy_token(text)
+    if fuzzy_candidate:
+        for label in labels:
+            fuzzy_label = _normalize_label_fuzzy_token(str(label or ""))
+            if fuzzy_label and (fuzzy_candidate in fuzzy_label or fuzzy_label in fuzzy_candidate):
+                return label
     return None
 
 
@@ -1176,9 +1182,9 @@ def _extract_fill_from_group(group: ET.Element) -> str | None:
 
 
 def _extract_fill_color(style: str) -> str | None:
-    match = re.search(r"fill:\s*(#[0-9a-fA-F]{6})", style)
+    match = re.search(r"fill:\s*([^;]+)", style)
     if match:
-        return match.group(1)
+        return match.group(1).strip()
     return None
 
 
@@ -1335,24 +1341,42 @@ def _extract_structured_delete_labels(
 
 
 def _extract_structured_changes(
+    operation_target: dict[str, Any] | None,
     data_change: dict[str, Any] | None,
 ) -> list[tuple[str, float, float, str]]:
     payload = data_change if isinstance(data_change, dict) else {}
     root = payload.get("change") if isinstance(payload.get("change"), dict) else payload
     if not isinstance(root, dict):
         return []
-    changes = root.get("changes")
-    if not isinstance(changes, list):
-        return []
     out: list[tuple[str, float, float, str]] = []
-    for change in changes:
-        if not isinstance(change, dict):
-            continue
-        label = str(change.get("category_name") or change.get("category") or "").strip()
-        years = change.get("years")
-        values = change.get("values")
-        if not label or not isinstance(years, list) or not isinstance(values, list):
-            continue
+    changes = root.get("changes")
+    if isinstance(changes, list):
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            label = str(change.get("category_name") or change.get("category") or "").strip()
+            years = change.get("years")
+            values = change.get("values")
+            if not label or not isinstance(years, list) or not isinstance(values, list):
+                continue
+            for year, value in zip(years, values):
+                try:
+                    out.append((label, float(year), float(value), "absolute"))
+                except (TypeError, ValueError):
+                    continue
+    if out:
+        return out
+
+    label = str(
+        root.get("category_name")
+        or root.get("category")
+        or (operation_target or {}).get("category_name")
+        or (operation_target or {}).get("category")
+        or ""
+    ).strip()
+    years = root.get("years")
+    values = root.get("values")
+    if label and isinstance(years, list) and isinstance(values, list):
         for year, value in zip(years, values):
             try:
                 out.append((label, float(year), float(value), "absolute"))

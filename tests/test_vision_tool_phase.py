@@ -4,11 +4,16 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from chart_agent.core.vision_tool_phase import (
+    _coerce_tool_calls,
+    _extract_area_top_boundary,
     _extract_colored_scatter_points,
     _extract_line_legend_map,
     _extract_line_labels_from_intersection_question,
     _prefer_line_intersection_tools,
     _prefer_multi_color_scatter_tools,
+    _svg_highlight_top_boundary,
+    _svg_isolate_all_color_topologies,
+    _svg_isolate_color_topology,
     _svg_isolate_target_lines,
     _svg_zoom_and_highlight_intersection,
 )
@@ -16,10 +21,7 @@ from chart_agent.core.vision_tool_phase import (
 
 class VisionToolPhaseTests(unittest.TestCase):
     def test_scatter_prefers_multi_color_topology_by_default(self) -> None:
-        calls = [
-            {"tool": "isolate_color_topology", "args": {"target_color": "red"}},
-            {"tool": "highlight_rect", "args": {"x1": 1, "y1": 2, "x2": 3, "y2": 4}},
-        ]
+        calls = [{"tool": "isolate_color_topology", "args": {"target_color": "red"}}]
 
         updated = _prefer_multi_color_scatter_tools(
             chart_type="scatter",
@@ -27,8 +29,7 @@ class VisionToolPhaseTests(unittest.TestCase):
             tool_calls=calls,
         )
 
-        self.assertEqual(updated[0], {"tool": "isolate_all_color_topologies", "args": {}})
-        self.assertEqual(updated[1], calls[1])
+        self.assertEqual(updated, [{"tool": "isolate_all_color_topologies", "args": {}}])
 
     def test_scatter_keeps_single_color_when_question_names_color(self) -> None:
         calls = [{"tool": "isolate_color_topology", "args": {"target_color": "red"}}]
@@ -55,7 +56,6 @@ class VisionToolPhaseTests(unittest.TestCase):
     def test_scatter_replaces_all_single_color_calls_when_question_is_not_color_specific(self) -> None:
         calls = [
             {"tool": "isolate_color_topology", "args": {"target_color": "red"}},
-            {"tool": "highlight_rect", "args": {"x1": 1, "y1": 2, "x2": 3, "y2": 4}},
             {"tool": "isolate_color_topology", "args": {"target_color": "blue"}},
         ]
 
@@ -65,8 +65,36 @@ class VisionToolPhaseTests(unittest.TestCase):
             tool_calls=calls,
         )
 
-        self.assertEqual(updated[0], {"tool": "isolate_all_color_topologies", "args": {}})
-        self.assertEqual(updated[1:], [calls[1]])
+        self.assertEqual(updated, [{"tool": "isolate_all_color_topologies", "args": {}}])
+
+    def test_removed_markup_tools_are_rejected(self) -> None:
+        calls, rejected = _coerce_tool_calls(
+            [
+                {"tool": "add_point", "args": {"x": 1, "y": 2}},
+                {"tool": "draw_line", "args": {"x1": 1, "y1": 2, "x2": 3, "y2": 4}},
+                {"tool": "highlight_rect", "args": {"x1": 1, "y1": 2, "x2": 3, "y2": 4}},
+            ],
+            canvas_width=100,
+            canvas_height=100,
+        )
+
+        self.assertEqual(calls, [])
+        self.assertEqual(
+            rejected,
+            [
+                {"tool": "add_point", "args": {"x": 1, "y": 2}, "reason": "unknown_tool"},
+                {
+                    "tool": "draw_line",
+                    "args": {"x1": 1, "y1": 2, "x2": 3, "y2": 4},
+                    "reason": "unknown_tool",
+                },
+                {
+                    "tool": "highlight_rect",
+                    "args": {"x1": 1, "y1": 2, "x2": 3, "y2": 4},
+                    "reason": "unknown_tool",
+                },
+            ],
+        )
 
     def test_non_scatter_tools_are_unchanged(self) -> None:
         calls = [{"tool": "isolate_color_topology", "args": {"target_color": "red"}}]
@@ -138,7 +166,88 @@ class VisionToolPhaseTests(unittest.TestCase):
 
         self.assertEqual(fills, ["#2ca02c", "#9467bd", "#ff7f0e"])
 
-    def test_zoom_and_highlight_intersection_draws_target_line_overlays(self) -> None:
+    def test_isolate_all_color_topologies_draws_background_halos_within_eps(self) -> None:
+        root = ET.fromstring(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="axes_1">
+                <g id="PathCollection_1">
+                  <g><use href="#m1" x="10" y="20" style="fill: #2ca02c; stroke: #ffffff" /></g>
+                </g>
+                <g id="PathCollection_2">
+                  <g><use href="#m2" x="30" y="40" style="fill: #ff7f0e; stroke: #ffffff" /></g>
+                </g>
+              </g>
+            </svg>
+            """
+        )
+        overlay = ET.Element("{http://www.w3.org/2000/svg}g")
+
+        _svg_isolate_all_color_topologies(
+            root,
+            overlay,
+            "http://www.w3.org/2000/svg",
+            100,
+            100,
+            scatter_cluster_context={
+                "x_ticks": [(0.0, 0.0), (10.0, 10.0)],
+                "y_ticks": [(0.0, 0.0), (10.0, 10.0)],
+                "eps": 4.0,
+            },
+        )
+
+        ns = {"svg": "http://www.w3.org/2000/svg"}
+        axes = root.find(".//svg:g[@id='axes_1']", ns)
+        self.assertIsNotNone(axes)
+        children_ids = [str(child.get("id") or "") for child in list(axes)]
+        self.assertEqual(children_ids[0], "tool_aug_scatter_background")
+
+        halos = root.findall(".//svg:g[@id='tool_aug_scatter_background']/svg:circle", ns)
+        self.assertEqual(len(halos), 2)
+        self.assertEqual(sorted(circle.get("fill") for circle in halos), ["#2ca02c", "#ff7f0e"])
+        self.assertTrue(all(abs(float(circle.get("r") or 0.0) - 2.0) < 1e-6 for circle in halos))
+
+    def test_isolate_color_topology_draws_only_target_color_backgrounds(self) -> None:
+        root = ET.fromstring(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="axes_1">
+                <g id="PathCollection_1">
+                  <g><use href="#m1" x="10" y="20" style="fill: #2ca02c; stroke: #ffffff" /></g>
+                </g>
+                <g id="PathCollection_2">
+                  <g><use href="#m2" x="30" y="40" style="fill: #ff7f0e; stroke: #ffffff" /></g>
+                </g>
+                <g id="PathCollection_3">
+                  <g><use href="#m3" x="50" y="60" style="fill: #2ca02c; stroke: #ffffff" /></g>
+                </g>
+              </g>
+            </svg>
+            """
+        )
+        overlay = ET.Element("{http://www.w3.org/2000/svg}g")
+
+        _svg_isolate_color_topology(
+            root,
+            overlay,
+            "http://www.w3.org/2000/svg",
+            {"target_color": "green"},
+            100,
+            100,
+            scatter_cluster_context={
+                "x_ticks": [(0.0, 0.0), (10.0, 10.0)],
+                "y_ticks": [(0.0, 0.0), (10.0, 10.0)],
+                "eps": 6.0,
+            },
+        )
+
+        ns = {"svg": "http://www.w3.org/2000/svg"}
+        halos = root.findall(".//svg:g[@id='tool_aug_scatter_background']/svg:circle", ns)
+        self.assertEqual(len(halos), 2)
+        self.assertEqual(sorted(circle.get("fill") for circle in halos), ["#2ca02c", "#2ca02c"])
+        self.assertTrue(all(abs(float(circle.get("r") or 0.0) - 3.0) < 1e-6 for circle in halos))
+
+    def test_zoom_and_highlight_intersection_draws_only_target_line_overlays(self) -> None:
         root = ET.fromstring(
             """
             <svg xmlns="http://www.w3.org/2000/svg">
@@ -171,11 +280,13 @@ class VisionToolPhaseTests(unittest.TestCase):
         )
 
         paths = overlay.findall("{http://www.w3.org/2000/svg}path")
+        lines = overlay.findall("{http://www.w3.org/2000/svg}line")
         circles = overlay.findall("{http://www.w3.org/2000/svg}circle")
         texts = overlay.findall("{http://www.w3.org/2000/svg}text")
 
         self.assertGreaterEqual(len(paths), 2)
-        self.assertGreaterEqual(len(circles), 1)
+        self.assertEqual(len(lines), 0)
+        self.assertEqual(len(circles), 0)
         self.assertEqual(texts, [])
         overlay_strokes = [path.get("stroke") for path in paths[:2]]
         self.assertEqual(sorted(overlay_strokes), ["#0000ff", "#ff0000"])
@@ -212,8 +323,64 @@ class VisionToolPhaseTests(unittest.TestCase):
             100,
         )
 
+        lines = overlay.findall("{http://www.w3.org/2000/svg}line")
         circles = overlay.findall("{http://www.w3.org/2000/svg}circle")
-        self.assertGreaterEqual(len(circles), 1)
+        self.assertEqual(len(lines), 0)
+        self.assertEqual(len(circles), 0)
+
+    def test_extract_area_top_boundary_returns_upper_envelope(self) -> None:
+        root = ET.fromstring(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="axes_1">
+                <g id="FillBetweenPolyCollection_1">
+                  <path d="M 10 60 L 20 40 L 30 50 L 30 90 L 20 90 L 10 90 Z" />
+                </g>
+                <g id="FillBetweenPolyCollection_2">
+                  <path d="M 10 45 L 20 30 L 30 35 L 30 60 L 20 70 L 10 65 Z" />
+                </g>
+              </g>
+            </svg>
+            """
+        )
+
+        boundary = _extract_area_top_boundary(root, "http://www.w3.org/2000/svg")
+
+        self.assertEqual(boundary, [(10.0, 45.0), (20.0, 30.0), (30.0, 35.0)])
+
+    def test_highlight_top_boundary_draws_only_polyline_overlays(self) -> None:
+        root = ET.fromstring(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="axes_1">
+                <g id="FillBetweenPolyCollection_1">
+                  <path d="M 10 60 L 20 40 L 30 50 L 30 90 L 20 90 L 10 90 Z" />
+                </g>
+                <g id="FillBetweenPolyCollection_2">
+                  <path d="M 10 45 L 20 30 L 30 35 L 30 60 L 20 70 L 10 65 Z" />
+                </g>
+              </g>
+            </svg>
+            """
+        )
+        overlay = ET.Element("{http://www.w3.org/2000/svg}g")
+
+        _svg_highlight_top_boundary(
+            root,
+            overlay,
+            "http://www.w3.org/2000/svg",
+            100,
+            100,
+        )
+
+        paths = overlay.findall("{http://www.w3.org/2000/svg}path")
+        lines = overlay.findall("{http://www.w3.org/2000/svg}line")
+        circles = overlay.findall("{http://www.w3.org/2000/svg}circle")
+
+        self.assertEqual(len(paths), 3)
+        self.assertEqual(len(lines), 0)
+        self.assertEqual(len(circles), 0)
+        self.assertEqual(paths[0].get("d"), "M 10.000000 45.000000 L 20.000000 30.000000 L 30.000000 35.000000")
 
     def test_isolate_target_lines_fades_only_non_target_lines(self) -> None:
         root = ET.fromstring(

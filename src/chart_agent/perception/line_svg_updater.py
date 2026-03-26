@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 from typing import Any
 
 from chart_agent.perception.svg_renderer import default_output_paths, render_svg_to_png
+from chart_agent.prompts.prompt import build_line_update_parse_prompt
 
 SVG_NS = "http://www.w3.org/2000/svg"
 REFERENCE_LINE_FIGSIZE = (8, 5)
@@ -32,8 +33,10 @@ def update_line_svg(
     llm: Any | None = None,
     operation_target: dict[str, Any] | None = None,
     data_change: dict[str, Any] | None = None,
+    operation: str | None = None,
 ) -> str:
-    ops = _resolve_line_ops(question, operation_target=operation_target, data_change=data_change)
+    forced_op = _normalize_line_op_token(str(operation or ""))
+    ops = [forced_op] if forced_op else _resolve_line_ops(question, operation_target=operation_target, data_change=data_change)
     if len(ops) > 1:
         return _run_line_ops_sequence(
             svg_path=svg_path,
@@ -536,12 +539,7 @@ def _update_line_point(
 def _parse_with_llm(
     question: str, llm: Any
 ) -> tuple[list[float], dict[str, Any]] | None:
-    prompt = (
-        "You are parsing a line chart update. "
-        "Extract the new series values in order. "
-        "Return JSON only with keys: values (list of numbers)."
-        f"\nQuestion: {question}"
-    )
+    prompt = build_line_update_parse_prompt(question=question)
     try:
         response = llm.invoke(prompt)
     except Exception:
@@ -623,9 +621,11 @@ def _remove_line_series(
     for label in labels_to_remove:
         resolved_label = _resolve_matching_label(label, [str(key or "") for key in strokes_by_label])
         target_stroke = strokes_by_label.get(resolved_label) if resolved_label else None
-        if not target_stroke:
+        line_group = _find_line_by_stroke(axes, target_stroke) if target_stroke else None
+        if line_group is None and resolved_label:
+            line_group = _find_line_by_legend_index(axes, legend_items, resolved_label)
+        if not target_stroke and line_group is None:
             raise ValueError("No matching legend color for selected series.")
-        line_group = _find_line_by_stroke(axes, target_stroke)
         if line_group is None:
             raise ValueError("No line series matches selected legend color.")
         axes.remove(line_group)
@@ -679,6 +679,10 @@ def _normalize_label_token(value: str) -> str:
     return text[1:] if text.startswith("@") else text
 
 
+def _normalize_label_fuzzy_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", _normalize_label_token(value))
+
+
 def _labels_match(left: str, right: str) -> bool:
     left_text = str(left or "").strip()
     right_text = str(right or "").strip()
@@ -699,6 +703,12 @@ def _resolve_matching_label(candidate: str, labels: list[str]) -> str | None:
     for label in labels:
         if _labels_match(text, label):
             return label
+    fuzzy_candidate = _normalize_label_fuzzy_token(text)
+    if fuzzy_candidate:
+        for label in labels:
+            fuzzy_label = _normalize_label_fuzzy_token(str(label or ""))
+            if fuzzy_label and (fuzzy_candidate in fuzzy_label or fuzzy_label in fuzzy_candidate):
+                return label
     return None
 
 
@@ -1172,9 +1182,9 @@ def _extract_stroke_from_group(group: ET.Element) -> str | None:
     if path is None:
         return None
     style = path.get("style", "")
-    match = re.search(r"stroke:\s*(#[0-9a-fA-F]{6})", style)
+    match = re.search(r"stroke:\s*([^;]+)", style)
     if match:
-        return match.group(1)
+        return match.group(1).strip()
     return None
 
 
@@ -1188,10 +1198,41 @@ def _find_line_by_stroke(axes: ET.Element, stroke: str) -> ET.Element | None:
         if path is None:
             continue
         style = path.get("style", "")
-        match = re.search(r"stroke:\s*(#[0-9a-fA-F]{6})", style)
-        if match and match.group(1).lower() == stroke_norm:
+        match = re.search(r"stroke:\s*([^;]+)", style)
+        if match and match.group(1).strip().lower() == stroke_norm:
             return g
     return None
+
+
+def _find_line_by_legend_index(
+    axes: ET.Element,
+    legend_items: list[dict[str, Any]],
+    label: str,
+) -> ET.Element | None:
+    target_idx = None
+    for idx, item in enumerate(legend_items):
+        if _labels_match(str(item.get("label") or ""), label):
+            target_idx = idx
+            break
+    if target_idx is None:
+        return None
+
+    line_groups: list[ET.Element] = []
+    for g in axes.findall(f'.//{{{SVG_NS}}}g'):
+        gid = str(g.get("id") or "")
+        if not gid.startswith("line2d_") or gid == "line2d_update":
+            continue
+        path = g.find(f'./{{{SVG_NS}}}path')
+        if path is None:
+            continue
+        style = str(path.get("style") or "")
+        if "stroke:" not in style or "fill: none" not in style:
+            continue
+        line_groups.append(g)
+
+    if target_idx >= len(line_groups):
+        return None
+    return line_groups[target_idx]
 
 
 def _remove_legend_item(

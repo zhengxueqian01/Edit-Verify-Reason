@@ -6,6 +6,8 @@ import os
 import re
 from typing import Any
 
+from chart_agent.prompts.prompt import build_text_graph_parse_prompt
+
 _EDGE_TUPLE_PATTERN = re.compile(r"\(([^()]+)\)")
 _NODE_RANGE_PATTERN = re.compile(r"nodes?\s+.*?(\d+)\s*(?:to|-)\s*(\d+)", re.IGNORECASE)
 _QUERY_FROM_TO_PATTERN = re.compile(
@@ -103,17 +105,7 @@ def _parse_graph(text: str, llm: Any | None) -> dict[str, Any]:
 
 
 def _parse_with_llm(text: str, llm: Any) -> dict[str, Any] | None:
-    prompt = (
-        "Return ONLY valid JSON. Do not include any extra text.\n"
-        "Schema: {"
-        '"directed": bool, "weighted": bool, '
-        '"nodes": [string|number], '
-        '"edges": [{"source": string|number, "target": string|number, "weight": number?}], '
-        '"query": {"source": string|number, "target": string|number}'
-        "}\n"
-        "If the graph is unweighted, omit weight or set it to 1.\n"
-        f"Text: {text}"
-    )
+    prompt = build_text_graph_parse_prompt(text=text)
     try:
         response = llm.invoke(prompt)
     except Exception:

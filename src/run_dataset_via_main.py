@@ -361,6 +361,7 @@ def is_answer_match(expected: Any, answer_text: str) -> bool:
 
 def extract_final_svg_path(result: dict[str, Any], source_svg: Path, chart_type: str) -> Path | None:
     attempt_logs = result.get("attempt_logs")
+    saw_step_logs = False
     if isinstance(attempt_logs, list):
         for attempt in reversed(attempt_logs):
             if not isinstance(attempt, dict):
@@ -368,6 +369,8 @@ def extract_final_svg_path(result: dict[str, Any], source_svg: Path, chart_type:
             step_logs = attempt.get("step_logs")
             if not isinstance(step_logs, list):
                 continue
+            if step_logs:
+                saw_step_logs = True
             for step in reversed(step_logs):
                 if not isinstance(step, dict):
                     continue
@@ -376,6 +379,11 @@ def extract_final_svg_path(result: dict[str, Any], source_svg: Path, chart_type:
                     path = Path(p.strip())
                     if path.exists():
                         return path
+
+    # Avoid copying stale global fallback SVGs when the current run never executed
+    # any update steps. Those files may come from an earlier unrelated run.
+    if not saw_step_logs:
+        return None
 
     default_svg, _ = default_output_paths(str(source_svg), chart_type)
     fallback = Path(default_svg)

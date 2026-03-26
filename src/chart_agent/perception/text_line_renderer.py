@@ -6,6 +6,8 @@ import os
 import re
 from typing import Any
 
+from chart_agent.prompts.prompt import build_text_line_parse_prompt
+
 
 def render_line_from_text(
     text_spec: str,
@@ -94,13 +96,7 @@ def render_line_from_text(
 def _parse_with_llm(
     text_spec: str, llm: Any
 ) -> tuple[list[dict[str, Any]], list[Any] | None, dict[str, Any] | None]:
-    prompt = (
-        "Return ONLY valid JSON. Do not include any extra text.\n"
-        "Schema: {\"years\": [year,...], \"series\": [{\"label\": string, \"values\": [number, ...]}]}\n"
-        "If labels are missing, use \"Series 1\", \"Series 2\", etc.\n"
-        "If years are present in the text, include them in the years field in order.\n"
-        f"Text: {text_spec}"
-    )
+    prompt = build_text_line_parse_prompt(text_spec=text_spec)
     try:
         response = llm.invoke(prompt)
     except Exception:

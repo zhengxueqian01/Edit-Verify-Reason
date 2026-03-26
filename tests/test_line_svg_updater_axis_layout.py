@@ -13,6 +13,7 @@ from chart_agent.perception.line_svg_updater import (
     _map_data_to_pixel,
     _append_legend_item,
     _pick_unused_line_stroke,
+    _remove_line_series,
     _resolve_delete_labels,
     _resolve_line_ops,
     _update_line_point,
@@ -343,6 +344,108 @@ class LineSvgAxisLayoutTests(unittest.TestCase):
         self.assertNotIn('line2d_update"', text)
         self.assertNotIn('line2d_update_markers', text)
         self.assertNotIn('line2d_update_legend', text)
+
+        tmpdir.cleanup()
+
+    def test_update_line_svg_honors_forced_change_operation_for_generic_hint(self) -> None:
+        content = """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="axes_1">
+                <g id="line2d_1">
+                  <path d="M 0 90 L 10 80" style="fill: none; stroke: #111111; stroke-width: 2" />
+                </g>
+                <g id="line2d_2">
+                  <path d="M 0 85 L 10 75" style="fill: none; stroke: #222222; stroke-width: 2" />
+                </g>
+              </g>
+              <g id="legend_1">
+                <g id="line_1"><path d="M 0 0 L 5 0" style="fill: none; stroke: #111111; stroke-width: 2" /></g>
+                <g id="text_1"><!-- A --><g transform="translate(30 20) scale(0.1 -0.1)"></g></g>
+                <g id="line_2"><path d="M 0 14 L 5 14" style="fill: none; stroke: #222222; stroke-width: 2" /></g>
+                <g id="text_2"><!-- B --><g transform="translate(30 34) scale(0.1 -0.1)"></g></g>
+              </g>
+            </svg>
+        """
+        tmpdir, svg_path = self._write_temp_svg(content)
+        out_svg = Path(tmpdir.name) / "out.svg"
+        out_png = Path(tmpdir.name) / "out.png"
+        mapping_info = {
+            "x_ticks": [(0.0, 0.0), (10.0, 10.0)],
+            "y_ticks": [(100.0, 0.0), (0.0, 100.0)],
+        }
+
+        with patch("chart_agent.perception.line_svg_updater.render_svg_to_png", return_value=str(out_png)):
+            update_line_svg(
+                str(svg_path),
+                "Apply the listed value revisions.",
+                mapping_info,
+                output_path=str(out_png),
+                svg_output_path=str(out_svg),
+                llm=None,
+                operation="change",
+                data_change={
+                    "changes": [
+                        {"category_name": "A", "years": [0], "values": [15]},
+                    ]
+                },
+            )
+
+        text = out_svg.read_text(encoding="utf-8")
+        self.assertIn('d="M 0.000000 85.000000 L 10.000000 80.000000"', text)
+        self.assertNotIn("listed value revisions", text)
+        self.assertNotIn('line2d_update"', text)
+        self.assertNotIn('text_update_legend', text)
+
+        tmpdir.cleanup()
+
+    def test_remove_line_series_falls_back_to_legend_order_when_stroke_missing(self) -> None:
+        content = """
+            <svg xmlns="http://www.w3.org/2000/svg">
+              <g id="axes_1">
+                <g id="line2d_1">
+                  <path d="M 0 90 L 10 80" style="fill: none; stroke: #111111; stroke-width: 2" />
+                </g>
+                <g id="line2d_2">
+                  <path d="M 0 85 L 10 75" style="fill: none; stroke: #222222; stroke-width: 2" />
+                </g>
+              </g>
+              <g id="legend_1">
+                <g id="line_1"><path d="M 0 0 L 5 0" style="fill: none; stroke-width: 2" /></g>
+                <g id="text_1"><!-- Alpha Team --><g transform="translate(30 20) scale(0.1 -0.1)"></g></g>
+                <g id="line_2"><path d="M 0 14 L 5 14" style="fill: none; stroke-width: 2" /></g>
+                <g id="text_2"><!-- Beta Team --><g transform="translate(30 34) scale(0.1 -0.1)"></g></g>
+              </g>
+            </svg>
+        """
+        tmpdir, svg_path = self._write_temp_svg(content)
+        out_svg = Path(tmpdir.name) / "out.svg"
+        out_png = Path(tmpdir.name) / "out.png"
+        mapping_info = {
+            "x_ticks": [(0.0, 0.0), (10.0, 10.0)],
+            "y_ticks": [(100.0, 0.0), (0.0, 100.0)],
+        }
+
+        with patch("chart_agent.perception.line_svg_updater.render_svg_to_png", return_value=str(out_png)):
+            _remove_line_series(
+                str(svg_path),
+                'Delete the category "Beta Team"',
+                mapping_info,
+                output_path=str(out_png),
+                svg_output_path=str(out_svg),
+                llm=None,
+                operation_target={"category_name": "Beta Team"},
+                data_change={"del": {"category_name": "Beta Team"}},
+            )
+
+        root = ET.parse(out_svg).getroot()
+        axes = root.find('{http://www.w3.org/2000/svg}g[@id="axes_1"]')
+        assert axes is not None
+        remaining = [
+            g.get("id")
+            for g in axes.findall('{http://www.w3.org/2000/svg}g')
+            if str(g.get("id", "")).startswith("line2d_")
+        ]
+        self.assertEqual(remaining, ["line2d_1"])
 
         tmpdir.cleanup()
 

@@ -9,6 +9,7 @@ from collections import Counter
 from typing import Any
 
 from chart_agent.config import get_svg_perception_mode
+from chart_agent.prompts.prompt import build_svg_summary_perception_prompt
 
 SVG_NS = "http://www.w3.org/2000/svg"
 XLINK_NS = "http://www.w3.org/1999/xlink"
@@ -599,13 +600,7 @@ def _llm_svg_summary_perception(
     svg_summary: dict[str, Any],
     llm: Any,
 ) -> dict[str, Any] | None:
-    prompt = (
-        "You are perceiving an SVG chart from a compact structured summary. "
-        "Infer the chart type from the summary instead of relying on the user question alone. "
-        "Return JSON only with key: chart_type. "
-        "chart_type must be one of: scatter, line, area, graph, unknown. "
-        f"\nQuestion: {question}\nSVG Summary: {json.dumps(svg_summary, ensure_ascii=True)}"
-    )
+    prompt = build_svg_summary_perception_prompt(question=question, svg_summary=svg_summary)
     try:
         response = llm.invoke(prompt)
     except Exception:

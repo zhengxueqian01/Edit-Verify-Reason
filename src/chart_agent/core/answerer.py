@@ -4,20 +4,12 @@ import base64
 import json
 from pathlib import Path
 import re
+from typing import Literal
 from typing import Any
 
-ANSWER_SYSTEM_PROMPT = (
-    "Return ONLY valid JSON. Do not include any extra text.\n"
-    'Schema: {"answer": string, "confidence": number between 0 and 1, "reason": [string]}\n'
-    "For cluster-counting questions, follow the clustering rule stated in the question.\n"
-    "If the chart distinguishes categories/colors, points of the same category that are connected by enough intermediate "
-    "points should be treated as one cluster when that satisfies the DBSCAN conditions in the question.\n"
-    "Do not treat each color/category as one cluster by default.\n"
-    "Use color/category only to decide which points belong to the same category, then judge the number of clusters by "
-    "their spatial proximity, separation, and density in the chart.\n"
-    "When answering, pay attention to both color/category membership and spatial relationships; points with the same "
-    "color can still form multiple clusters if they are spatially separated."
-)
+from chart_agent.prompts.prompt import ANSWER_GENERAL_SYSTEM_PROMPT, build_answer_system_prompt
+
+ANSWER_SYSTEM_PROMPT = ANSWER_GENERAL_SYSTEM_PROMPT
 
 
 def answer_question(
@@ -25,10 +17,19 @@ def answer_question(
     qa_question: str,
     data_summary: dict[str, Any],
     output_image_path: str | None,
+    chart_type: str | None = None,
+    answer_stage: Literal["original", "updated", "tool_augmented"] = "updated",
     image_context_note: str | None = None,
     llm: Any,
 ) -> dict[str, Any]:
-    system_prompt = _compose_system_prompt(image_context_note)
+    # 回答阶段：为当前问答任务选择合适的 system prompt。
+    system_prompt = _compose_system_prompt(
+        qa_question=qa_question,
+        data_summary=data_summary,
+        chart_type=chart_type,
+        answer_stage=answer_stage,
+        image_context_note=image_context_note,
+    )
     prompt_text = f"Input: {qa_question}\n"
 
     content = ""
@@ -69,11 +70,22 @@ def answer_question(
     return _normalize_answer_payload(payload)
 
 
-def _compose_system_prompt(image_context_note: str | None) -> str:
-    note = str(image_context_note or "").strip()
-    if not note:
-        return ANSWER_SYSTEM_PROMPT
-    return f"{ANSWER_SYSTEM_PROMPT}\nImage context: {note}"
+def _compose_system_prompt(
+    *,
+    qa_question: str,
+    data_summary: dict[str, Any],
+    chart_type: str | None,
+    answer_stage: Literal["original", "updated", "tool_augmented"],
+    image_context_note: str | None,
+) -> str:
+    # 回答阶段的 prompt 组装逻辑统一收敛在 prompts/prompt.py。
+    return build_answer_system_prompt(
+        qa_question=qa_question,
+        data_summary=data_summary,
+        chart_type=chart_type,
+        answer_stage=answer_stage,
+        image_context_note=image_context_note,
+    )
 
 
 def _normalize_answer_payload(payload: dict[str, Any]) -> dict[str, Any]:

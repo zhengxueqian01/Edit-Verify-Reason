@@ -19,6 +19,12 @@ from chart_agent.core.trace import append_trace
 from chart_agent.core.answerer import answer_question
 from chart_agent.core.vision_tool_phase import run_visual_tool_phase
 from chart_agent.llm_factory import make_llm
+from chart_agent.prompts.prompt import (
+    ANSWER_TOOL_AUGMENTED_IMAGE_CONTEXT_PROMPT,
+    ANSWER_UPDATED_IMAGE_CONTEXT_PROMPT,
+    build_svg_intent_plan_prompt,
+    build_update_plan_prompt,
+)
 from chart_agent.perception.scatter_svg_updater import update_scatter_svg
 from chart_agent.perception.area_svg_updater import update_area_svg
 from chart_agent.perception.line_svg_updater import update_line_svg
@@ -26,6 +32,8 @@ from chart_agent.perception.render_validator import validate_render
 from chart_agent.perception.svg_renderer import default_output_paths
 from chart_agent.perception.svg_perceiver import perceive_svg
 from chart_agent.perception import area_svg_updater as area_ops
+from chart_agent.perception import line_svg_updater as line_ops
+from chart_agent.perception import scatter_svg_updater as scatter_ops
 
 
 def _parse_args() -> argparse.Namespace:
@@ -93,6 +101,7 @@ def run_main(
         qa_question=original_question,
         data_summary={},
         output_image_path=original_image_path,
+        answer_stage="original",
         image_context_note="This is the original chart image before any requested update is applied.",
         llm=answer_llm,
     )
@@ -378,11 +387,10 @@ def run_main(
     initial_answer = answer_question(
         qa_question=qa_question,
         data_summary=answer_data_summary,
+        chart_type=chart_type,
         output_image_path=final_eval_image,
-        image_context_note=(
-            "The requested chart update has already been applied to this image. "
-            "Answer the QA question only based on the updated chart."
-        ),
+        answer_stage="updated",
+        image_context_note=ANSWER_UPDATED_IMAGE_CONTEXT_PROMPT,
         llm=answer_llm,
     )
     output["answer_initial"] = initial_answer
@@ -415,28 +423,19 @@ def run_main(
         initial_confidence = 0.0
 
     force_tool_phase = _should_force_visual_tool_phase(qa_question, chart_type)
-    if initial_confidence < TOOL_AUG_CONFIDENCE_THRESHOLD or force_tool_phase:
-        tool_phase = run_visual_tool_phase(
-            question=qa_question,
-            chart_type=chart_type,
-            data_summary=answer_data_summary,
-            image_path=last_output_image,
-            svg_path=final_step_svg_path or None,
-            llm=tool_planner_llm,
-            svg_perception_mode=svg_perception_mode,
-        )
-        if force_tool_phase and isinstance(tool_phase, dict):
-            tool_phase["force_run"] = True
-    else:
-        tool_phase = {
-            "ok": False,
-            "reason": "skipped_high_confidence",
-            "confidence_threshold": TOOL_AUG_CONFIDENCE_THRESHOLD,
-            "initial_confidence": initial_confidence,
-            "tool_calls": [],
-            "augmented_svg_path": None,
-            "augmented_image_path": None,
-        }
+    tool_phase = run_visual_tool_phase(
+        question=qa_question,
+        chart_type=chart_type,
+        data_summary=answer_data_summary,
+        image_path=last_output_image,
+        svg_path=final_step_svg_path or None,
+        llm=tool_planner_llm,
+        svg_perception_mode=svg_perception_mode,
+    )
+    if isinstance(tool_phase, dict):
+        tool_phase["initial_confidence"] = initial_confidence
+        tool_phase["confidence_threshold"] = TOOL_AUG_CONFIDENCE_THRESHOLD
+        tool_phase["force_tool_phase_candidate"] = force_tool_phase
     output["tool_phase"] = tool_phase
     _apply_tool_augmented_answer(
         output=output,
@@ -528,12 +527,24 @@ def _resolve_questions(inputs: dict[str, Any], splitter_llm: Any) -> tuple[str, 
         cand_qa = cand_qa or heuristic_qa
     cand_operation_target = _merge_dict_like(inline_structured_context.get("operation_target"), cand_operation_target)
     cand_data_change = _merge_dict_like(inline_structured_context.get("data_change"), cand_data_change)
+    embedded_update_text, embedded_update_context, embedded_update_suffix = _extract_embedded_structured_context(cand_update)
+    embedded_update_context = _normalize_structured_context(embedded_update_context)
+    cand_operation_target = _merge_dict_like(
+        embedded_update_context.get("operation_target"),
+        cand_operation_target,
+    )
+    cand_data_change = _merge_dict_like(
+        embedded_update_context.get("data_change"),
+        cand_data_change,
+    )
+    if embedded_update_text:
+        cand_update = embedded_update_text
     structured_context_note = ""
-    if inline_structured_suffix:
+    if inline_structured_suffix or embedded_update_suffix:
         structured_context_note = _structured_context_suffix_text(
             operation_target=cand_operation_target,
             data_change=cand_data_change,
-            raw_suffix=inline_structured_suffix,
+            raw_suffix=inline_structured_suffix or embedded_update_suffix,
         )
     elif llm_success and (cand_operation_target or cand_data_change):
         structured_context_note = _structured_context_suffix_text(
@@ -1119,23 +1130,12 @@ def _llm_plan_update(question: str, chart_type: str, llm: Any, retry_hint: str =
         if chart_type == "scatter"
         else "list of {x:number,y:number} (required for scatter add, else empty list)"
     )
-    prompt = (
-        "You are planning chart-edit operations.\n"
-        f"Chart type: {chart_type}\n"
-        "Return JSON only with keys:\n"
-        "- normalized_question: concise imperative update instruction in English\n"
-        "- steps: array of step objects in execution order; each step has operation and optional question_hint, operation_target, data_change, and new_points fields\n"
-        f"- new_points: {new_points_schema}\n"
-        f"- retry_hint: {retry_hint or 'none'}\n"
-        "Rules:\n"
-        "- Do not rewrite or summarize structured data payloads.\n"
-        "- question_hint is only a short execution hint, not the source of truth for values.\n"
-        "- If the input includes structured operation target or data change, preserve them at step level instead of collapsing them into prose.\n"
-        "- For scatter add, if point colors are provided in the question/data payload, copy them through to each new_points item.\n"
-        "- For multi-operation requests, steps must follow the operation order stated in the input text. Do not reorder operations unless the input explicitly requires it.\n"
-        "- If one operation expands into multiple substeps, keep those substeps grouped inside that operation block and preserve the block order from the input text.\n"
-        "Question:\n"
-        f"{question}"
+    # 更新规划阶段的 prompt。
+    prompt = build_update_plan_prompt(
+        question=question,
+        chart_type=chart_type,
+        retry_hint=retry_hint,
+        new_points_schema=new_points_schema,
     )
     try:
         response = llm.invoke(prompt)
@@ -1204,21 +1204,12 @@ def _llm_plan_svg_intent(
     structured_context: dict[str, Any],
     llm: Any,
 ) -> list[dict[str, Any]]:
-    prompt = (
-        "You are planning SVG edit intent for a chart update.\n"
-        "Return JSON only with key: steps.\n"
-        "- steps: array of step objects in execution order.\n"
-        "- each step may contain: operation, question_hint, operation_target, data_change, new_points.\n"
-        "- operation must be one of add|delete|change.\n"
-        "- Decide the concrete edit target from the operation text and SVG summary.\n"
-        "- Keep structured payloads in operation_target/data_change instead of prose when possible.\n"
-        "- For multi-operation requests, steps must follow the operation order stated in the operation text. Do not reorder operations unless the text explicitly requires it.\n"
-        "- If one operation expands into multiple substeps, keep those substeps grouped inside that operation block and preserve the block order from the operation text.\n"
-        "- Do not output explanations.\n"
-        f"Chart type: {chart_type}\n"
-        f"Operation text: {operation_text}\n"
-        f"Structured context: {json.dumps(_intent_structured_context_summary(structured_context), ensure_ascii=False)}\n"
-        f"SVG summary: {json.dumps(_intent_perception_summary(perception), ensure_ascii=False)}"
+    # SVG 意图规划阶段的 prompt。
+    prompt = build_svg_intent_plan_prompt(
+        operation_text=operation_text,
+        chart_type=chart_type,
+        structured_context_summary=_intent_structured_context_summary(structured_context),
+        perception_summary=_intent_perception_summary(perception),
     )
     try:
         response = llm.invoke(prompt)
@@ -1493,7 +1484,8 @@ def _merge_structured_with_existing_steps(
         if matches:
             existing = matches.pop(0)
             merged_step = dict(structured_step)
-            if str(structured_step.get("operation") or "").strip().lower() == "change":
+            op = str(structured_step.get("operation") or "").strip().lower()
+            if op in {"add", "change"}:
                 # Keep structured atomic change payloads authoritative so composite LLM
                 # payloads do not leak stale sibling updates into this step.
                 merged_step["operation_target"] = _merge_dict_like(
@@ -2016,6 +2008,20 @@ def _atomic_changes_from_step(operation_target: Any, data_change: Any) -> list[d
 
     atomic_changes = _atomic_changes_from_payload(change)
     if atomic_changes:
+        fallback_label = _first_non_empty_string(
+            target.get("category_name"),
+            target.get("category"),
+        )
+        if fallback_label:
+            normalized: list[dict[str, Any]] = []
+            for item in atomic_changes:
+                if not isinstance(item, dict):
+                    continue
+                candidate = dict(item)
+                if not _first_non_empty_string(candidate.get("category_name"), candidate.get("category")):
+                    candidate["category_name"] = fallback_label
+                normalized.append(candidate)
+            return normalized
         return atomic_changes
 
     label = _first_non_empty_string(
@@ -2279,6 +2285,17 @@ def _step_paths(svg_path: str, chart_type: str, idx: int, total: int) -> tuple[s
     return step_svg, step_png
 
 
+def _validation_context_from_mapping(mapping_info: Any) -> dict[str, Any]:
+    if not isinstance(mapping_info, dict):
+        return {}
+    context: dict[str, Any] = {}
+    for key in ("x_ticks", "y_ticks"):
+        value = mapping_info.get(key)
+        if isinstance(value, list):
+            context[key] = value
+    return context
+
+
 def _execute_planned_steps(
     *,
     inputs: dict[str, Any],
@@ -2369,6 +2386,7 @@ def _execute_planned_steps(
                 llm=llm,
                 operation_target=step.get("operation_target"),
                 data_change=step.get("data_change"),
+                operation=str(step.get("operation") or ""),
             )
         elif chart_type == "area":
             output_image = update_area_svg(
@@ -2390,6 +2408,11 @@ def _execute_planned_steps(
                 "index": idx + 1,
                 "operation": step.get("operation"),
                 "question": step_q,
+                "input_svg_path": step_inputs["svg_path"],
+                "operation_target": step.get("operation_target"),
+                "data_change": step.get("data_change"),
+                "new_points": _coerce_points(scatter_points if chart_type == "scatter" else step.get("new_points", [])),
+                "validation_context": _validation_context_from_mapping(mapping_info),
                 "output_svg_path": step_svg,
                 "output_image_path": output_image,
             }
@@ -2453,12 +2476,10 @@ def _apply_tool_augmented_answer(
         output["answer_tool_augmented"] = answer_question(
             qa_question=qa_question,
             data_summary=answer_data_summary,
+            chart_type=str(output.get("answer_input", {}).get("chart_type") or ""),
             output_image_path=augmented_path,
-            image_context_note=(
-                "The requested chart update has already been applied, and visual augmentation "
-                "has also been added to help reasoning. Answer the QA question only based on "
-                "this updated and enhanced chart."
-            ),
+            answer_stage="tool_augmented",
+            image_context_note=ANSWER_TOOL_AUGMENTED_IMAGE_CONTEXT_PROMPT,
             llm=answer_llm,
         )
         output["answer"] = output["answer_tool_augmented"]
@@ -2475,7 +2496,12 @@ def _validate_render_with_programmatic(
     llm: Any,
     svg_perception_mode: str | None = None,
 ) -> dict[str, Any]:
-    basic_check = validate_render(output_image, chart_type, update_spec, llm=None)
+    effective_update_spec = _effective_update_spec_for_render(
+        chart_type=chart_type,
+        update_spec=update_spec,
+        step_logs=step_logs,
+    )
+    basic_check = validate_render(output_image, chart_type, effective_update_spec, llm=None)
     if not basic_check.get("ok"):
         return basic_check
 
@@ -2500,7 +2526,29 @@ def _validate_render_with_programmatic(
             "programmatic": True,
         }
 
-    return validate_render(output_image, chart_type, update_spec, llm=llm)
+    return validate_render(output_image, chart_type, effective_update_spec, llm=llm)
+
+
+def _effective_update_spec_for_render(
+    *,
+    chart_type: str,
+    update_spec: dict[str, Any],
+    step_logs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not isinstance(update_spec, dict):
+        update_spec = {}
+    if str(chart_type or "").strip().lower() != "scatter":
+        return update_spec
+
+    for step in reversed(step_logs):
+        if not isinstance(step, dict):
+            continue
+        points = _coerce_points(step.get("new_points", []))
+        if points:
+            merged = dict(update_spec)
+            merged["new_points"] = points
+            return merged
+    return update_spec
 
 
 def _programmatic_validate(
@@ -2509,88 +2557,376 @@ def _programmatic_validate(
     llm: Any,
     svg_perception_mode: str | None = None,
 ) -> dict[str, Any] | None:
-    if chart_type != "area":
+    del llm, svg_perception_mode
+    chart = str(chart_type or "").strip().lower()
+    if chart == "area":
+        return _programmatic_validate_area_steps(step_logs)
+    if chart == "line":
+        return _programmatic_validate_line_steps(step_logs)
+    if chart == "scatter":
+        return _programmatic_validate_scatter_steps(step_logs)
+    return None
+
+
+def _programmatic_validate_area_steps(step_logs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    results: list[dict[str, Any]] = []
+    for step in step_logs:
+        if not isinstance(step, dict):
+            continue
+        step_op = str(step.get("operation") or "").strip().lower()
+        question = str(step.get("question") or "")
+        if step_op == "change" or _looks_like_area_change_question(question):
+            results.append(_validate_area_change_step(step))
+        elif step_op == "delete":
+            results.append(_validate_area_delete_step(step))
+    return _combine_programmatic_results(results)
+
+
+def _programmatic_validate_line_steps(step_logs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    results: list[dict[str, Any]] = []
+    for step in step_logs:
+        if not isinstance(step, dict):
+            continue
+        step_op = str(step.get("operation") or "").strip().lower()
+        question = str(step.get("question") or "")
+        if step_op == "change" or _looks_like_line_change_question(question):
+            results.append(_validate_line_change_step(step))
+        elif step_op == "delete":
+            results.append(_validate_line_delete_step(step))
+    return _combine_programmatic_results(results)
+
+
+def _programmatic_validate_scatter_steps(step_logs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    results: list[dict[str, Any]] = []
+    for step in step_logs:
+        if not isinstance(step, dict):
+            continue
+        step_op = str(step.get("operation") or "").strip().lower()
+        points = _coerce_points(step.get("new_points", []))
+        if step_op == "add" and points:
+            results.append(_validate_scatter_add_step(step))
+    return _combine_programmatic_results(results)
+
+
+def _combine_programmatic_results(results: list[dict[str, Any]]) -> dict[str, Any] | None:
+    filtered = [result for result in results if isinstance(result, dict)]
+    if not filtered:
         return None
-    change_step = None
-    for step in reversed(step_logs):
-        step_op = str(step.get("operation", "")).lower()
-        step_q = str(step.get("question", ""))
-        if step_op == "change" or _looks_like_area_change_question(step_q):
-            change_step = step
-            break
-    if not change_step:
-        return None
-    svg_path = str(change_step.get("output_svg_path") or "").strip()
-    question = str(change_step.get("question") or "").strip()
-    if not svg_path or not question:
-        return None
-    if not os.path.exists(svg_path):
+    for result in filtered:
+        if not result.get("ok"):
+            return result
+    confidence = min(float(result.get("confidence", 0.99)) for result in filtered)
+    return {"ok": True, "confidence": confidence, "issues": []}
+
+
+def _load_svg_document(svg_path: str) -> tuple[ET.Element, str]:
+    with open(svg_path, "r", encoding="utf-8") as handle:
+        content = handle.read()
+    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+    root = ET.parse(svg_path, parser=parser).getroot()
+    return root, content
+
+
+def _validation_ticks(step: dict[str, Any]) -> tuple[list[Any], list[Any]]:
+    context = step.get("validation_context")
+    if not isinstance(context, dict):
+        return [], []
+    x_ticks = context.get("x_ticks") if isinstance(context.get("x_ticks"), list) else []
+    y_ticks = context.get("y_ticks") if isinstance(context.get("y_ticks"), list) else []
+    return x_ticks, y_ticks
+
+
+def _step_atomic_changes(step: dict[str, Any]) -> list[tuple[str, float, float]]:
+    operation_target = step.get("operation_target")
+    data_change = step.get("data_change")
+    atomic = _atomic_changes_from_step(operation_target, data_change)
+    out: list[tuple[str, float, float]] = []
+    for change in atomic:
+        if not isinstance(change, dict):
+            continue
+        label = str(change.get("category_name") or "").strip()
+        years = change.get("years")
+        values = change.get("values")
+        if not label or not isinstance(years, list) or not isinstance(values, list):
+            continue
+        for year, value in zip(years, values):
+            try:
+                out.append((label, float(year), float(value)))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _validation_tolerance(expected_value: float) -> float:
+    return max(1e-3, abs(expected_value) * 1e-3)
+
+
+def _validate_area_change_step(step: dict[str, Any]) -> dict[str, Any]:
+    svg_path = str(step.get("output_svg_path") or "").strip()
+    question = str(step.get("question") or "").strip()
+    if not svg_path or not os.path.exists(svg_path):
         return {"ok": False, "confidence": 0.0, "issues": [f"programmatic: svg not found: {svg_path}"]}
+    x_ticks, y_ticks = _validation_ticks(step)
+    if len(x_ticks) < 2 or len(y_ticks) < 2:
+        return {"ok": False, "confidence": 0.0, "issues": ["programmatic: insufficient axis ticks"]}
 
     try:
-        with open(svg_path, "r", encoding="utf-8") as handle:
-            content = handle.read()
-        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
-        root = ET.parse(svg_path, parser=parser).getroot()
+        root, content = _load_svg_document(svg_path)
         axes = root.find(f'.//{{{area_ops.SVG_NS}}}g[@id="axes_1"]')
         if axes is None:
             return {"ok": False, "confidence": 0.0, "issues": ["programmatic: axes_1 missing"]}
-
-        perceived = perceive_svg(
-            svg_path,
-            question=question,
-            llm=llm,
-            perception_mode=svg_perception_mode,
-        )
-        mapping = perceived.get("mapping_info", {}) if isinstance(perceived, dict) else {}
-        x_ticks = mapping.get("x_ticks", []) if isinstance(mapping, dict) else []
-        y_ticks = mapping.get("y_ticks", []) if isinstance(mapping, dict) else []
-        if len(x_ticks) < 2 or len(y_ticks) < 2:
-            return {"ok": False, "confidence": 0.0, "issues": ["programmatic: insufficient axis ticks"]}
-
         _, legend_items = area_ops._extract_legend_items(root, content)
         labels = [item["label"] for item in legend_items if item.get("label")]
-        parsed = area_ops._parse_year_value_update(question, labels, llm=llm)
-        if parsed is None:
+        parsed_changes = _step_atomic_changes(step)
+        if not parsed_changes and question:
+            parsed = area_ops._parse_year_value_update(question, labels, llm=None)
+            if parsed is not None:
+                parsed_changes = [(parsed[0], parsed[1], parsed[2])]
+        if not parsed_changes:
             return {"ok": False, "confidence": 0.0, "issues": ["programmatic: cannot parse change request"]}
-        label, year_value, expected_value, _ = parsed
-
-        target_fill = None
-        for item in legend_items:
-            if item.get("label") == label:
-                target_fill = item.get("fill")
-                break
-        if not target_fill:
-            return {"ok": False, "confidence": 0.0, "issues": [f"programmatic: legend label missing: {label}"]}
 
         areas = area_ops._extract_area_groups(axes)
-        target_idx = area_ops._find_area_by_fill(areas, target_fill)
-        if target_idx is None:
-            return {"ok": False, "confidence": 0.0, "issues": [f"programmatic: area fill missing for {label}"]}
-
         x_values, series_values = area_ops._area_series_values(areas, y_ticks)
-        target_x = area_ops._data_to_pixel(year_value, x_ticks)
-        year_idx = min(range(len(x_values)), key=lambda i: abs(x_values[i] - target_x))
-        actual_value = float(series_values[target_idx][year_idx])
-        tolerance = max(1e-3, abs(expected_value) * 1e-3)
-        if abs(actual_value - expected_value) <= tolerance:
+        for label, year_value, expected_value in parsed_changes:
+            resolved_label = area_ops._resolve_matching_label(label, labels) or label
+            target_idx = area_ops._find_area_index(resolved_label, legend_items, areas)
+            if target_idx is None:
+                return {
+                    "ok": False,
+                    "confidence": 0.0,
+                    "issues": [f"programmatic: area series missing for {resolved_label}"],
+                }
+            target_x = area_ops._data_to_pixel(year_value, x_ticks)
+            year_idx = min(range(len(x_values)), key=lambda i: abs(x_values[i] - target_x))
+            actual_value = float(series_values[target_idx][year_idx])
+            if abs(actual_value - expected_value) > _validation_tolerance(expected_value):
+                return {
+                    "ok": False,
+                    "confidence": 0.05,
+                    "issues": [
+                        f"programmatic: expected {resolved_label}@{int(year_value)}={expected_value}, got {actual_value}",
+                    ],
+                }
+        return {"ok": True, "confidence": 0.99, "issues": []}
+    except Exception as exc:
+        return {"ok": False, "confidence": 0.0, "issues": [f"programmatic exception: {exc}"]}
+
+
+def _validate_line_change_step(step: dict[str, Any]) -> dict[str, Any]:
+    svg_path = str(step.get("output_svg_path") or "").strip()
+    question = str(step.get("question") or "").strip()
+    if not svg_path or not os.path.exists(svg_path):
+        return {"ok": False, "confidence": 0.0, "issues": [f"programmatic: svg not found: {svg_path}"]}
+    x_ticks, y_ticks = _validation_ticks(step)
+    if len(x_ticks) < 2 or len(y_ticks) < 2:
+        return {"ok": False, "confidence": 0.0, "issues": ["programmatic: insufficient axis ticks"]}
+
+    try:
+        root, content = _load_svg_document(svg_path)
+        axes = root.find(f'.//{{{line_ops.SVG_NS}}}g[@id="axes_1"]')
+        if axes is None:
+            return {"ok": False, "confidence": 0.0, "issues": ["programmatic: axes_1 missing"]}
+        _, legend_items = line_ops._extract_legend_items(root, content)
+        labels = [item["label"] for item in legend_items if item.get("label")]
+        parsed_changes = _step_atomic_changes(step)
+        if not parsed_changes and question:
+            parsed = line_ops._parse_year_value_update(question, labels, llm=None)
+            if parsed is not None:
+                parsed_changes = [(parsed[0], parsed[1], parsed[2])]
+        if not parsed_changes:
+            return {"ok": False, "confidence": 0.0, "issues": ["programmatic: cannot parse change request"]}
+
+        for label, year_value, expected_value in parsed_changes:
+            resolved_label = line_ops._resolve_matching_label(label, labels) or label
+            target_stroke = None
+            for item in legend_items:
+                if line_ops._labels_match(str(item.get("label") or ""), resolved_label):
+                    target_stroke = item.get("stroke")
+                    break
+            line_group = line_ops._find_line_by_stroke(axes, target_stroke) if target_stroke else None
+            if line_group is None:
+                line_group = line_ops._find_line_by_legend_index(axes, legend_items, resolved_label)
+            if line_group is None:
+                return {
+                    "ok": False,
+                    "confidence": 0.0,
+                    "issues": [f"programmatic: line series missing for {resolved_label}"],
+                }
+            line_path = line_group.find(f'./{{{line_ops.SVG_NS}}}path')
+            if line_path is None:
+                return {"ok": False, "confidence": 0.0, "issues": ["programmatic: line path missing"]}
+            points = line_ops._extract_path_points(line_path.get("d", ""))
+            if not points:
+                return {"ok": False, "confidence": 0.0, "issues": ["programmatic: line path empty"]}
+            target_x = line_ops._data_to_pixel(year_value, x_ticks)
+            point_idx = min(range(len(points)), key=lambda i: abs(points[i][0] - target_x))
+            actual_value = float(line_ops._pixel_to_data(points[point_idx][1], y_ticks))
+            if abs(actual_value - expected_value) > _validation_tolerance(expected_value):
+                return {
+                    "ok": False,
+                    "confidence": 0.05,
+                    "issues": [
+                        f"programmatic: expected {resolved_label}@{int(year_value)}={expected_value}, got {actual_value}",
+                    ],
+                }
+        return {"ok": True, "confidence": 0.99, "issues": []}
+    except Exception as exc:
+        return {"ok": False, "confidence": 0.0, "issues": [f"programmatic exception: {exc}"]}
+
+
+def _validate_area_delete_step(step: dict[str, Any]) -> dict[str, Any]:
+    return _validate_delete_step(
+        step=step,
+        svg_ns=area_ops.SVG_NS,
+        extract_labels=area_ops._extract_structured_delete_labels,
+        match_labels=area_ops._match_labels,
+        resolve_label=area_ops._resolve_matching_label,
+        extract_legend_items=area_ops._extract_legend_items,
+        chart_name="area",
+    )
+
+
+def _validate_line_delete_step(step: dict[str, Any]) -> dict[str, Any]:
+    return _validate_delete_step(
+        step=step,
+        svg_ns=line_ops.SVG_NS,
+        extract_labels=line_ops._extract_structured_line_delete_labels,
+        match_labels=line_ops._match_labels,
+        resolve_label=line_ops._resolve_matching_label,
+        extract_legend_items=line_ops._extract_legend_items,
+        chart_name="line",
+    )
+
+
+def _validate_delete_step(
+    *,
+    step: dict[str, Any],
+    svg_ns: str,
+    extract_labels: Any,
+    match_labels: Any,
+    resolve_label: Any,
+    extract_legend_items: Any,
+    chart_name: str,
+) -> dict[str, Any]:
+    input_svg = str(step.get("input_svg_path") or "").strip()
+    output_svg = str(step.get("output_svg_path") or "").strip()
+    question = str(step.get("question") or "").strip()
+    if not input_svg or not os.path.exists(input_svg):
+        return {"ok": False, "confidence": 0.0, "issues": [f"programmatic: input svg not found: {input_svg}"]}
+    if not output_svg or not os.path.exists(output_svg):
+        return {"ok": False, "confidence": 0.0, "issues": [f"programmatic: svg not found: {output_svg}"]}
+
+    try:
+        input_root, input_content = _load_svg_document(input_svg)
+        output_root, output_content = _load_svg_document(output_svg)
+        _ = input_root.find(f'.//{{{svg_ns}}}g[@id="axes_1"]')
+        _ = output_root.find(f'.//{{{svg_ns}}}g[@id="axes_1"]')
+        _, input_items = extract_legend_items(input_root, input_content)
+        _, output_items = extract_legend_items(output_root, output_content)
+        input_labels = [item["label"] for item in input_items if item.get("label")]
+        output_labels = [item["label"] for item in output_items if item.get("label")]
+
+        labels = extract_labels(step.get("operation_target"), step.get("data_change"))
+        if not labels and question:
+            labels = match_labels(question, input_labels)
+        if not labels:
+            return {"ok": False, "confidence": 0.0, "issues": [f"programmatic: cannot parse {chart_name} delete request"]}
+
+        for label in labels:
+            resolved = resolve_label(label, input_labels) or label
+            if resolved not in input_labels:
+                return {
+                    "ok": False,
+                    "confidence": 0.0,
+                    "issues": [f"programmatic: delete target missing in original legend: {resolved}"],
+                }
+            if resolved in output_labels:
+                return {
+                    "ok": False,
+                    "confidence": 0.05,
+                    "issues": [f"programmatic: delete target still present after update: {resolved}"],
+                }
+        return {"ok": True, "confidence": 0.99, "issues": []}
+    except Exception as exc:
+        return {"ok": False, "confidence": 0.0, "issues": [f"programmatic exception: {exc}"]}
+
+
+def _validate_scatter_add_step(step: dict[str, Any]) -> dict[str, Any]:
+    svg_path = str(step.get("output_svg_path") or "").strip()
+    if not svg_path or not os.path.exists(svg_path):
+        return {"ok": False, "confidence": 0.0, "issues": [f"programmatic: svg not found: {svg_path}"]}
+    expected_points = _coerce_points(step.get("new_points", []))
+    if not expected_points:
+        return {"ok": False, "confidence": 0.0, "issues": ["programmatic: scatter points missing"]}
+    x_ticks, y_ticks = _validation_ticks(step)
+    if len(x_ticks) < 2 or len(y_ticks) < 2:
+        return {"ok": False, "confidence": 0.0, "issues": ["programmatic: insufficient axis ticks"]}
+
+    try:
+        root, _content = _load_svg_document(svg_path)
+        axes = root.find(f'.//{{{scatter_ops.SVG_NS}}}g[@id="axes_1"]')
+        if axes is None:
+            return {"ok": False, "confidence": 0.0, "issues": ["programmatic: axes_1 missing"]}
+        update_group = axes.find(f'.//{{{scatter_ops.SVG_NS}}}g[@id="PathCollection_update"]')
+        if update_group is None:
+            return {"ok": False, "confidence": 0.0, "issues": ["programmatic: scatter update group missing"]}
+
+        rendered_points: list[tuple[float, float]] = []
+        for circle in update_group.findall(f'.//{{{scatter_ops.SVG_NS}}}circle'):
+            try:
+                rendered_points.append((float(circle.get("cx", "nan")), float(circle.get("cy", "nan"))))
+            except ValueError:
+                continue
+        for use in update_group.findall(f'.//{{{scatter_ops.SVG_NS}}}use'):
+            try:
+                rendered_points.append((float(use.get("x", "nan")), float(use.get("y", "nan"))))
+            except ValueError:
+                continue
+        if len(rendered_points) != len(expected_points):
             return {
-                "ok": True,
-                "confidence": 0.99,
-                "issues": [],
+                "ok": False,
+                "confidence": 0.05,
+                "issues": [f"programmatic: expected {len(expected_points)} scatter points, got {len(rendered_points)}"],
             }
-        return {
-            "ok": False,
-            "confidence": 0.05,
-            "issues": [
-                f"programmatic: expected {label}@{int(year_value)}={expected_value}, got {actual_value}",
-            ],
-        }
+
+        unmatched = list(rendered_points)
+        tolerance = 1.5
+        for point in expected_points:
+            expected_x = float(scatter_ops._interpolate_axis(float(point["x"]), x_ticks))
+            expected_y = float(scatter_ops._interpolate_axis(float(point["y"]), y_ticks))
+            match_idx = None
+            for idx, (actual_x, actual_y) in enumerate(unmatched):
+                if abs(actual_x - expected_x) <= tolerance and abs(actual_y - expected_y) <= tolerance:
+                    match_idx = idx
+                    break
+            if match_idx is None:
+                return {
+                    "ok": False,
+                    "confidence": 0.05,
+                    "issues": [f"programmatic: scatter point missing near ({point['x']}, {point['y']})"],
+                }
+            unmatched.pop(match_idx)
+        return {"ok": True, "confidence": 0.99, "issues": []}
     except Exception as exc:
         return {"ok": False, "confidence": 0.0, "issues": [f"programmatic exception: {exc}"]}
 
 
 def _looks_like_area_change_question(question: str) -> bool:
+    if not question:
+        return False
+    has_year = bool(re.search(r"\b(19|20)\d{2}\b", question))
+    if not has_year:
+        return False
+    return bool(
+        re.search(
+            r"(increase|decrease|reduce|raise|update|change|set\s+to|to\s+\d|modify)",
+            question,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _looks_like_line_change_question(question: str) -> bool:
     if not question:
         return False
     has_year = bool(re.search(r"\b(19|20)\d{2}\b", question))

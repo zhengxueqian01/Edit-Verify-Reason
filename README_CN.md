@@ -78,6 +78,59 @@ python -m src.run_dataset_via_main \
 
 运行记录输出到：`output/dataset_records/<类别>_<任务>_<时间>/`，例如 `task1_add_20260313_153000/`。
 
+## 消融实验模式
+
+`src.main` 与 `src.run_dataset_via_main` 支持通过 `--experiment-mode` 切换完整流程或消融流程。
+
+如果不传 `--experiment-mode`，默认等价于：
+
+```bash
+--experiment-mode full
+```
+
+单例运行示例：
+
+```bash
+python -m src.main \
+  --question "Delete one series and tell me which year has the maximum value" \
+  --image dataset/task2-line/094/094.png \
+  --svg dataset/task2-line/094/094.svg \
+  --experiment-mode full
+```
+
+```bash
+python -m src.main \
+  --question "Delete one series and tell me which year has the maximum value" \
+  --image dataset/task2-line/094/094.png \
+  --svg dataset/task2-line/094/094.svg \
+  --experiment-mode wo_visual_enhancement
+```
+
+批量运行示例：
+
+```bash
+python -m src.run_dataset_via_main \
+  --input-dir dataset/task2-line \
+  --qa-index 0 \
+  --max-render-retries 2 \
+  --experiment-mode wo_rendering_verification
+```
+
+支持的模式如下：
+
+- `full`：完整流程。依次执行 Question Decomposition、SVG Update、Rendering Verification、Visual Enhancement。
+- `wo_question_decomposition`：禁用问题拆分模块。既不调用 LLM 拆分，也不走规则拆分，直接使用原始问题进入后续流程。
+- `wo_svg_update`：禁用 SVG Update。既不调用 LLM 更新规划，也不走规则更新，也不执行任何 updater，整体退化为 reasoning only。
+- `wo_rendering_verification`：禁用渲染验证。既不调用 LLM 验证，也不走程序化校验，流程直接跳过该阶段。
+- `wo_visual_enhancement`：禁用视觉增强。既不调用 tool planner，也不执行任何增强工具。
+- `always_visual_enhancement`：始终执行视觉增强。移除基于初始回答置信度的触发门控，强制进入 Visual Enhancement 阶段。
+
+说明：
+
+- 消融模式下，被禁用的模块会被整体旁路，不允许“LLM 失效后回退到规则”，也不允许“规则失效后改走 LLM”。
+- `always_visual_enhancement` 不是禁用模块，而是强制打开 Visual Enhancement。
+- 结果 JSON 中会记录本次运行所使用的实验模式，便于后续统计和复现。
+
 ## 独立验证 SVG 匹配
 
 单独执行生成 SVG 和 ground truth 的匹配验证：

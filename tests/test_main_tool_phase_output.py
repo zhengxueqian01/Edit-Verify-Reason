@@ -3,10 +3,17 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from main import _apply_tool_augmented_answer, _should_answer_after_failed_render
+from main import (
+    TOOL_AUG_CONFIDENCE_THRESHOLD,
+    _apply_tool_augmented_answer,
+    _should_answer_after_failed_render,
+)
 
 
 class MainToolPhaseOutputTests(unittest.TestCase):
+    def test_tool_phase_threshold_constant_is_still_exposed_for_debugging(self) -> None:
+        self.assertEqual(TOOL_AUG_CONFIDENCE_THRESHOLD, 0.85)
+
     def test_tool_augmented_answer_does_not_overwrite_base_output_image(self) -> None:
         output = {
             "output_image_path": "output/scatter/000_scatter_update_updated.png",

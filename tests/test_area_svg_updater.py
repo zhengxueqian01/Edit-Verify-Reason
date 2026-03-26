@@ -12,6 +12,7 @@ from chart_agent.perception.area_svg_updater import (
     _extract_area_groups,
     _extract_legend_items,
     _extract_multi_add_series_specs,
+    _resolve_matching_label,
     _resolve_area_ops,
     _update_area_remove_series,
     _update_area_year_point,
@@ -440,6 +441,55 @@ class AreaSvgUpdaterTests(unittest.TestCase):
         self.assertIn("10.000000 72.000000", text)
 
         tmpdir.cleanup()
+
+    def test_update_area_change_accepts_atomic_structured_step_payload(self) -> None:
+        content = f"""
+        <svg xmlns="{SVG_NS}">
+          <g id="axes_1">
+            <g id="FillBetweenPolyCollection_1">
+              <path d="M 0 90 L 10 80 L 10 100 L 0 100 Z" style="fill: #111111" />
+            </g>
+            <g id="FillBetweenPolyCollection_2">
+              <path d="M 0 85 L 10 75 L 10 80 L 0 90 Z" style="fill: #222222" />
+            </g>
+          </g>
+          <g id="legend_1">
+            <g id="patch_1"><path d="M 0 0 L 5 0 L 5 5 L 0 5 z" style="fill: #111111" /></g>
+            <g id="text_1"><!-- A --><g transform="translate(30 20) scale(0.1 -0.1)"></g></g>
+            <g id="patch_2"><path d="M 0 14 L 5 14 L 5 19 L 0 19 z" style="fill: #222222" /></g>
+            <g id="text_2"><!-- B --><g transform="translate(30 34) scale(0.1 -0.1)"></g></g>
+          </g>
+        </svg>
+        """
+        tmpdir, svg_path = self._write_temp_svg(content)
+        out_svg = Path(tmpdir.name) / "out.svg"
+        out_png = Path(tmpdir.name) / "out.png"
+        mapping_info = {
+            "x_ticks": [(0.0, 0.0), (10.0, 10.0)],
+            "y_ticks": [(100.0, 0.0), (0.0, 100.0)],
+        }
+
+        with patch("chart_agent.perception.area_svg_updater.render_svg_to_png", return_value=str(out_png)):
+            _update_area_year_point(
+                str(svg_path),
+                "Operation: change",
+                mapping_info,
+                output_path=str(out_png),
+                svg_output_path=str(out_svg),
+                llm=None,
+                operation_target={"category_name": "B"},
+                data_change={"years": [10], "values": [8]},
+            )
+
+        text = out_svg.read_text(encoding="utf-8")
+        self.assertIn("10.000000 72.000000", text)
+
+        tmpdir.cleanup()
+
+    def test_resolve_matching_label_allows_fuzzy_label_match(self) -> None:
+        resolved = _resolve_matching_label("Regional Carriers", ["Regional-Carriers", "Alpha"])
+
+        self.assertEqual(resolved, "Regional-Carriers")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import json
 import unittest
 
 from main import (
+    _effective_update_spec_for_render,
     _maybe_apply_llm_intent_steps,
     _coerce_points,
     _coerce_steps,
@@ -128,12 +129,69 @@ class MainQuestionSplitTests(unittest.TestCase):
         )
         self.assertEqual(qa_question, "How many clusters are there now?")
         self.assertEqual(data_change, {"points": [{"x": 10, "y": 20}, {"x": 15, "y": 18}]})
-        self.assertEqual(
-            split_info["operation_text"],
-            'Add two points. operation_target: {"category_name": "new points"}, data_change: {"points": [{"x": 10, "y": 20}, {"x": 15, "y": 18}]}',
+
+    def test_resolve_questions_recovers_embedded_data_change_from_operation_text(self) -> None:
+        llm = _StubLLM(
+            json.dumps(
+                {
+                    "operation_text": (
+                        '1. Add the category Business Class; 2. Apply the listed value revisions. '
+                        '"data_change": {"add": {"category_name": "Business Class", "years": ["2015"], "values": [158822]}, '
+                        '"change": {"changes": [{"category_name": "Charter Flights", "years": ["2024"], "values": [168860]}]}}'
+                    ),
+                    "qa_question": "In which year does the overall maximum occur?",
+                    "operation_target": {"add_category": "Business Class"},
+                    "data_change": {"add": {"category_name": "Business Class", "years": ["2015"], "values": [158822]}},
+                    "llm_success": True,
+                }
+            )
         )
-        self.assertEqual(split_info["operation_target"], {"category_name": "new points"})
+
+        _operation_text, _qa_question, split_info, data_change = _resolve_questions(
+            {
+                "question": "After adding the category Business Class and applying the listed value revisions, in which year does the overall maximum occur?"
+            },
+            llm,
+        )
+
+        self.assertEqual(
+            data_change,
+            {
+                "add": {"category_name": "Business Class", "years": ["2015"], "values": [158822]},
+                "change": {
+                    "changes": [
+                        {"category_name": "Charter Flights", "years": ["2024"], "values": [168860]}
+                    ]
+                },
+            },
+        )
         self.assertEqual(split_info["data_change"], data_change)
+
+    def test_effective_update_spec_for_render_prefers_step_scatter_points(self) -> None:
+        update_spec = {"new_points": [{"x": 5.0, "y": 3.0}]}
+        step_logs = [
+            {
+                "operation": "add",
+                "new_points": [
+                    {"x": 34.69, "y": 72.6, "color": "orange"},
+                    {"x": 35.82, "y": 68.84, "color": "orange"},
+                ],
+            }
+        ]
+
+        effective = _effective_update_spec_for_render(
+            chart_type="scatter",
+            update_spec=update_spec,
+            step_logs=step_logs,
+        )
+
+        self.assertEqual(
+            effective["new_points"],
+            [
+                {"x": 34.69, "y": 72.6, "color": "orange"},
+                {"x": 35.82, "y": 68.84, "color": "orange"},
+            ],
+        )
 
     def test_resolve_questions_prefers_llm_and_uses_rule_split_as_fallback(self) -> None:
         llm = _StubLLM(json.dumps({"llm_success": False}))

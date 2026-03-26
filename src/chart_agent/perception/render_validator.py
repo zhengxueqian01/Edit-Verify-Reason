@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from PIL import Image
+from chart_agent.prompts.prompt import build_render_validator_prompt
 
 
 def validate_render(
@@ -151,16 +152,13 @@ def _llm_check(
     non_empty: bool,
     llm: Any,
 ) -> dict[str, Any] | None:
-    prompt = (
-        "You are validating a rendered chart image. "
-        "Return JSON only with keys: ok (bool), confidence (0-1), issues (list of strings).\n"
-        f"Chart type: {chart_type}\n"
-        f"Update spec: {json.dumps(update_spec, ensure_ascii=False)}\n"
-        f"Image path: {image_path}\n"
-        f"Image size: {width}x{height}\n"
-        f"Non-empty pixels: {non_empty}\n"
-        "Focus on whether the rendered image likely contains the requested updates. "
-        "Do not answer the original question. If unsure, set ok=false and add an issue."
+    prompt = build_render_validator_prompt(
+        chart_type=chart_type,
+        update_spec=update_spec,
+        image_path=image_path,
+        width=width,
+        height=height,
+        non_empty=non_empty,
     )
     try:
         response = _invoke_multimodal_or_text(llm, prompt, image_path)

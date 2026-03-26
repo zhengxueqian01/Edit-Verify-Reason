@@ -94,7 +94,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         name="gemini",
         model=_get_env("GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-pro",
         api_key=AIHUBMIX_API_KEY,
-        base_url=_get_env("GEMINI_BASE_URL", "https://aihubmix.com/v1"),
+        base_url=_get_env("GEMINI_BASE_URL", "https://api.aihubmix.com/v1"),
         temperature=_get_env_float("GEMINI_TEMPERATURE", 0.0),
     ),
 }
