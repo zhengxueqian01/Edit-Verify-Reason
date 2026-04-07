@@ -1,8 +1,0 @@
-{
-  "name": "chart-agent-js-runner",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "jsdom": "^26.1.0"
-  }
-}
