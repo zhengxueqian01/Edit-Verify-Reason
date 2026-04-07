@@ -1,14 +1,14 @@
-# ChartAgent
+# Edit-Verify-Reason
 
 [中文说明](README_CN.md)
 
-This repository contains the current ChartAgent framework, evaluation scripts, and a local dataset snapshot for SVG chart editing and question answering.
+This repository contains the current Edit-Verify-Reason framework, evaluation scripts, and a local dataset snapshot for SVG chart editing and question answering.
 
 Important: this README lives under `Edit-Verify-Reason/`, but the commands below are intended to be run from the repository root.
 
 ## What It Does
 
-ChartAgent processes a chart task in six stages:
+Edit-Verify-Reason processes a chart task in six stages:
 
 1. Split the user request into update intent and QA target
 2. Perceive the existing SVG chart structure

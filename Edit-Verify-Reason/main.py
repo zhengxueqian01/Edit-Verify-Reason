@@ -38,7 +38,7 @@ from chart_agent.perception import scatter_svg_updater as scatter_ops
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Chart agent perception CLI")
+    parser = argparse.ArgumentParser(description="Edit-Verify-Reason perception CLI")
     parser.add_argument("--question", required=True, help="User question")
     parser.add_argument("--text_spec", default="", help="Text specification")
     parser.add_argument("--image", dest="image_path", default="", help="Path to image")

@@ -1,14 +1,14 @@
-# ChartAgent
+# Edit-Verify-Reason
 
 [English README](README.md)
 
-这个仓库包含 ChartAgent 当前的主框架、评测脚本，以及一份本地数据集快照，用于 SVG 图表编辑与问答。
+这个仓库包含 Edit-Verify-Reason 当前的主框架、评测脚本，以及一份本地数据集快照，用于 SVG 图表编辑与问答。
 
 注意：这份 README 放在 `Edit-Verify-Reason/` 目录下，但下面的命令默认都应在仓库根目录执行。
 
 ## 1. 项目做什么
 
-ChartAgent 当前流程分为六步：
+Edit-Verify-Reason 当前流程分为六步：
 
 1. 把用户请求拆成更新意图和问答目标
 2. 感知现有 SVG 图表结构

@@ -1,1 +1,1 @@
-"""Perception modules for chart agent."""
+"""Perception modules for Edit-Verify-Reason."""
