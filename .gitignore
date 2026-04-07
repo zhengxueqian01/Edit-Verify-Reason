@@ -61,22 +61,10 @@ Thumbs.db
 .env
 .env.*
 
-# Project outputs (按需保留)
-output/
-dataset/
-dataset*/
-output-0322/
-tmp/
-output-0325/
-output-0325-2/
 task3-output/
 task3-scatter
 Evaluation/
-
-# 1. 忽略该文件夹下的所有文件和子文件夹
 CMod-QA/task1-area/*
 CMod-QA/task2-line/*
-
-# 2. 排除该文件夹下的所有 .zip 文件，使其能被 Git 追踪上传
 !CMod-QA/task1-area/*.zip
 !CMod-QA/task2-line/*.zip
